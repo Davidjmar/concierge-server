@@ -2,14 +2,30 @@ import { Resend } from 'resend';
 import Event from '../models/event.js';
 
 class EmailService {
-  private resend: Resend;
+  private resend: Resend | null = null;
 
   constructor() {
-    this.resend = new Resend(process.env.RESEND_API_KEY);
+    const apiKey = process.env.RESEND_API_KEY;
+    if (!apiKey) {
+      console.warn('RESEND_API_KEY not found in environment variables. Email sending will be disabled.');
+      return;
+    }
+    try {
+      this.resend = new Resend(apiKey);
+      console.log('Resend email service initialized successfully');
+    } catch (error) {
+      console.error('Failed to initialize Resend:', error);
+      this.resend = null;
+    }
   }
 
   async sendRecommendations(userEmail: string, recommendations: Event[]) {
     try {
+      if (!this.resend) {
+        console.warn('Email service not properly initialized. Skipping email send.');
+        return { success: false, error: 'Email service not configured' };
+      }
+
       if (recommendations.length === 0) {
         console.log(`No recommendations to send to ${userEmail}`);
         return { success: true, sent: 0 };
@@ -17,14 +33,15 @@ class EmailService {
 
       const htmlContent = this.generateEmailContent(recommendations);
       
+      console.log(`Attempting to send email to ${userEmail} with ${recommendations.length} recommendations`);
       await this.resend.emails.send({
-        from: 'Concierge <recommendations@your-domain.com>',
+        from: 'Concierge <onboarding@resend.dev>',
         to: userEmail,
         subject: 'Your Daily Activity Recommendations',
         html: htmlContent
       });
 
-      console.log(`Sent recommendations to ${userEmail}`);
+      console.log(`Successfully sent recommendations to ${userEmail}`);
       return { success: true, sent: recommendations.length };
     } catch (error: any) {
       console.error('Error sending recommendations:', error);
