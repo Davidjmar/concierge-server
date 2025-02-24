@@ -30,6 +30,14 @@ if (isProduction) {
       }
     }
   };
+} else {
+  // In development, don't use SSL
+  sequelizeConfig = {
+    ...sequelizeConfig,
+    dialectOptions: {
+      ssl: false
+    }
+  };
 }
 
 const sequelize = new Sequelize(databaseUrl, sequelizeConfig);

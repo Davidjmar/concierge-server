@@ -12,14 +12,17 @@
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --detectOpenHandles",
     "test:watch": "jest --watch",
     "recommendations": "node --loader ts-node/esm src/scripts/triggerRecommendations.ts",
+    "test:sheets": "node --loader ts-node/esm src/scripts/testGoogleSheets.ts",
     "clean": "rm -rf dist",
     "prebuild": "npm run clean"
   },
   "dependencies": {
+    "@googlemaps/google-maps-services-js": "^3.4.0",
     "axios": "^0.24.0",
     "cheerio": "^1.0.0-rc.10",
     "dotenv": "^10.0.0",
     "express": "^4.17.1",
+    "googleapis": "^144.0.0",
     "node-cron": "^3.0.0",
     "nodemailer": "^6.7.2",
     "pg": "^8.11.3",
