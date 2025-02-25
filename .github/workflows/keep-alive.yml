@@ -1,0 +1,14 @@
+name: Keep Render Instance Alive
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'  # Run every 10 minutes
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Server Health Check
+        run: |
+          curl -f https://concierge-server.onrender.com/api/health || exit 1
+        # The -f flag will make the command fail if the response is not 2xx 
