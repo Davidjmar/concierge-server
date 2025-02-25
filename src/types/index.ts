@@ -55,4 +55,12 @@ export interface RawEvent {
 
 export interface WhereQuery {
   [key: string]: any;
-} 
+}
+
+export type EmailServiceResponse = {
+  success: boolean;
+} & ({
+  sent: number;
+} | {
+  error: string;
+}); 

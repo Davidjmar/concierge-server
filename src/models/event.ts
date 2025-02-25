@@ -1,5 +1,6 @@
-import { Model, DataTypes, InferAttributes, InferCreationAttributes, CreationOptional } from 'sequelize';
 import sequelize from '../config/database.js';
+import pkg from 'sequelize';
+const { Model, DataTypes } = pkg;
 
 type EventSource = 'eventbrite' | 'yelp' | 'reddit' | 'local_blog';
 type EventType = 'concert' | 'bar' | 'restaurant' | 'art' | 'sports' | 'social';
@@ -26,8 +27,8 @@ interface RecurrencePattern {
   dayOfMonth?: number;
 }
 
-class Event extends Model<InferAttributes<Event>, InferCreationAttributes<Event>> {
-  declare id: CreationOptional<number>;
+class Event extends Model {
+  declare id: number;
   declare title: string;
   declare description?: string;
   declare source: EventSource;

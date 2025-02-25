@@ -1,10 +1,11 @@
-import { Model, DataTypes, InferAttributes, InferCreationAttributes, CreationOptional } from 'sequelize';
 import sequelize from '../config/database.js';
+import pkg from 'sequelize';
+const { Model, DataTypes } = pkg;
 import User from './user.js';
 import Event from './event.js';
 
-class UserEventRecommendation extends Model<InferAttributes<UserEventRecommendation>, InferCreationAttributes<UserEventRecommendation>> {
-  declare id: CreationOptional<number>;
+class UserEventRecommendation extends Model {
+  declare id: number;
   declare user_id: number;
   declare event_id: number;
   declare sent_at: Date;

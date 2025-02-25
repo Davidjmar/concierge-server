@@ -15,8 +15,12 @@ describe('API Routes Test', () => {
     server = app.listen(0, done);
   });
 
-  afterAll(done => {
-    server.close(done);
+  afterAll(async () => {
+    await new Promise<void>((resolve) => {
+      server.close(() => {
+        resolve();
+      });
+    });
   });
 
   beforeEach(async () => {

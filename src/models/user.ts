@@ -1,9 +1,10 @@
-import { Model, DataTypes, InferAttributes, InferCreationAttributes, CreationOptional } from 'sequelize';
 import sequelize from '../config/database.js';
 import { UserPreferences, UserLocation } from '../types/index.js';
+import pkg from 'sequelize';
+const { Model, DataTypes } = pkg;
 
-class User extends Model<InferAttributes<User>, InferCreationAttributes<User>> {
-  declare id: CreationOptional<number>;
+class User extends Model {
+  declare id: number;
   declare email: string;
   declare preferences: UserPreferences;
   declare location: UserLocation;
