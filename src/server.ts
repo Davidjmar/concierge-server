@@ -110,8 +110,8 @@ cron.schedule('0 15 * * 1', async () => {
   }
 });
 
-// Schedule daily recommendation job at 5:20 PM MST
-cron.schedule('20 17 * * *', async () => {
+// Schedule daily recommendation job at 5:50 PM MST (00:50 UTC)
+cron.schedule('50 0 * * *', async () => {
   console.log('Starting daily recommendations...');
   try {
     // Verify database state before sending recommendations
