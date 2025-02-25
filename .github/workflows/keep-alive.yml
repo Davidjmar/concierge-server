@@ -10,5 +10,5 @@ jobs:
     steps:
       - name: Ping Server Health Check
         run: |
-          curl -f https://concierge-server.onrender.com/api/health || exit 1
+          curl -f https://concierge-server-q0h6.onrender.com/api/health || exit 1
         # The -f flag will make the command fail if the response is not 2xx 
