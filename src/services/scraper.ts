@@ -137,8 +137,14 @@ export class Scraper {
 
   async scrapeGoldenBuzz(neighborhood?: string): Promise<Partial<Event>[]> {
     try {
+      // Handle special neighborhood cases
+      let urlNeighborhood = neighborhood?.toLowerCase();
+      if (urlNeighborhood === 'rino') {
+        urlNeighborhood = 'river-north-art-district';
+      }
+      
       const baseUrl = 'https://denver.goldenbuzz.social/area/';
-      const url = neighborhood ? `${baseUrl}${neighborhood.toLowerCase()}/` : 'https://denver.goldenbuzz.social/happy-hour/';
+      const url = neighborhood ? `${baseUrl}${urlNeighborhood}/` : 'https://denver.goldenbuzz.social/happy-hour/';
       
       console.log(`Fetching URL: ${url}`);
       

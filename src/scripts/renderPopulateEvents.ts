@@ -18,16 +18,23 @@ async function renderPopulateEvents() {
 
     // Scrape from GoldenBuzz for multiple neighborhoods
     console.log('\n=== Scraping from GoldenBuzz ===');
-    const neighborhoods = ['highlands', 'lodo', 'rino', 'lohi', 'capitol-hill'];
+    const neighborhoods = ['highlands', 'lodo', 'river-north-art-district', 'lohi', 'capitol-hill'];
     const goldenBuzzEvents = [];
     
     for (const neighborhood of neighborhoods) {
-      console.log(`Scraping ${neighborhood}...`);
-      const events = await scraper.scrapeGoldenBuzz(neighborhood);
-      goldenBuzzEvents.push(...events);
-      console.log(`Found ${events.length} events in ${neighborhood}`);
+      try {
+        console.log(`Scraping ${neighborhood}...`);
+        const events = await scraper.scrapeGoldenBuzz(neighborhood);
+        goldenBuzzEvents.push(...events);
+        console.log(`Found ${events.length} events in ${neighborhood}`);
+      } catch (error: any) {
+        console.error(`Error scraping ${neighborhood}:`, error?.message || 'Unknown error');
+      }
+      // Add a small delay between neighborhood scrapes
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
+
+    console.log(`Found ${goldenBuzzEvents.length} total events from GoldenBuzz`);
 
     // Combine all events
     const allEvents = [...sheetEvents, ...goldenBuzzEvents];
