@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: kno
+    env: node
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+    plan: standard # This ensures the server doesn't sleep
+    scaling:
+      minInstances: 1 # Keep at least one instance running at all times
+      maxInstances: 1
+    healthCheckPath: /api/health # We should add this endpoint
+    autoDeploy: true 

@@ -1,42 +1,335 @@
 import User from '../models/user.js';
 import Event from '../models/event.js';
 import UserEventRecommendation from '../models/userEventRecommendation.js';
-import scraper from './scraper.js';
+import calendarService from './calendarService.js';
 import emailService from './emailService.js';
-import { WhereQuery, RawEvent, UserLocation, EventType, EventSource } from '../types/index.js';
+import { InterestMatrix, TagWeights, UserPreferencesV2, UserResponse } from '../types/index.js';
 import { Op } from 'sequelize';
-import sequelize from '../config/database.js';
 
-function calculateDistance(coords1: number[], coords2: number[]): number {
+// ─── Distance (Haversine) ─────────────────────────────────────────────────────
+
+function calculateDistanceMiles(coords1: number[], coords2: number[]): number {
   const [lon1, lat1] = coords1;
   const [lon2, lat2] = coords2;
-  
-  const R = 6371; // Radius of the earth in km
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLon = (lon2 - lon1) * Math.PI / 180;
-  
-  const a = 
-    Math.sin(dLat/2) * Math.sin(dLat/2) +
-    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
-    Math.sin(dLon/2) * Math.sin(dLon/2);
-  
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-  const distance = R * c; // Distance in km
-  
-  return distance;
+  const R = 3958.8; // Earth radius in miles
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+// ─── Budget tier helpers ──────────────────────────────────────────────────────
+
+const BUDGET_MAX_PRICE: Record<string, number> = {
+  free: 0,
+  budget: 15,
+  moderate: 50,
+  splurge: Infinity,
+};
+
+// ─── Interest matrix helpers ──────────────────────────────────────────────────
+
+function defaultMatrix(): InterestMatrix {
+  return { tag_weights: {}, venue_history: {}, last_updated: new Date().toISOString() };
+}
+
+function applyTagWeightUpdates(
+  matrix: InterestMatrix,
+  tags: string[],
+  delta: number
+): InterestMatrix {
+  const weights = { ...matrix.tag_weights };
+  for (const tag of tags) {
+    const current = weights[tag] ?? 1.0;
+    weights[tag] = Math.min(2.0, Math.max(0.3, current + delta));
+  }
+  return { ...matrix, tag_weights: weights, last_updated: new Date().toISOString() };
+}
+
+// ─── Recommendation Engine ────────────────────────────────────────────────────
+
 class RecommendationEngine {
-  async generateAndSendRecommendations() {
+
+  // ─── Main entry point ─────────────────────────────────────────────────────
+
+  /**
+   * Called by the hourly cron tick.
+   * Dispatches only users whose schedule matches the current time.
+   */
+  async runForEligibleUsers(): Promise<void> {
+    const now = new Date();
+    const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+    const todayName = dayNames[now.getDay()];
+    const currentHour = now.getUTCHours(); // compare to UTC
+
+    const users = await User.findAll({
+      where: { onboarding_complete: true },
+    });
+
+    for (const user of users) {
+      try {
+        const shouldRun = this.userMatchesSchedule(user, todayName, currentHour);
+        if (!shouldRun) continue;
+
+        console.log(`[RecommendationEngine] Running for user ${user.id} (${user.email})`);
+        await this.runForUser(user);
+      } catch (err) {
+        console.error(`[RecommendationEngine] Error for user ${user.id}:`, err);
+      }
+    }
+  }
+
+  /**
+   * Full recommendation run for a single user:
+   * 1. Check Google Calendar availability
+   * 2. Run 7-step matching pipeline
+   * 3. Create Google Calendar proposals
+   * 4. Record in DB
+   */
+  async runForUser(user: User): Promise<void> {
+    if (!user.google_access_token) {
+      console.warn(`User ${user.id} has no Google access token — skipping`);
+      return;
+    }
+
+    // 1. Get calendar availability
+    const busyWindows = await calendarService.getBusyWindows(user);
+    const openWindows = calendarService.getOpenWindows(busyWindows, user);
+
+    if (openWindows.length === 0) {
+      console.log(`User ${user.id}: no open windows found`);
+      return;
+    }
+
+    const maxProposals = user.max_proposals_per_run ?? 3;
+    const proposals: { event: Event; score: number }[] = [];
+
+    for (const window of openWindows) {
+      if (proposals.length >= maxProposals) break;
+      const candidates = await this.getCandidatesForWindow(user, window, proposals.map(p => p.event.id));
+      proposals.push(...candidates.slice(0, maxProposals - proposals.length));
+    }
+
+    if (proposals.length === 0) {
+      console.log(`User ${user.id}: no matching events found`);
+      return;
+    }
+
+    // 3. Create calendar proposals & record
+    for (const { event, score } of proposals) {
+      const gcalId = await calendarService.createProposal(user, event);
+      await UserEventRecommendation.create({
+        user_id: user.id,
+        event_id: event.id,
+        sent_at: new Date(),
+        proposed_at: new Date(),
+        google_calendar_event_id: gcalId ?? undefined,
+        user_response: 'pending',
+        proposal_score: score,
+      });
+      console.log(`User ${user.id}: proposed "${event.title}" (score ${score.toFixed(2)}, gcal: ${gcalId ?? 'none'})`);
+    }
+  }
+
+  // ─── 7-step matching pipeline ─────────────────────────────────────────────
+
+  private async getCandidatesForWindow(
+    user: User,
+    window: { start: Date; end: Date; isWeekend: boolean },
+    alreadyProposedIds: number[]
+  ): Promise<{ event: Event; score: number }[]> {
+
+    const prefs = (user.preferences as UserPreferencesV2) ?? {};
+    const matrix = (user.interest_matrix as InterestMatrix) ?? defaultMatrix();
+    const maxDistanceMiles = prefs.max_distance_miles ?? 5;
+    const budget = prefs.budget ?? 'moderate';
+    const maxPrice = BUDGET_MAX_PRICE[budget] ?? 50;
+
+    // Reference location: work on weekdays, home on weekends
+    const refLocation = window.isWeekend
+      ? (user.home_location ?? user.work_location)
+      : (user.work_location ?? user.home_location);
+
+    if (!refLocation?.coordinates) {
+      console.warn(`User ${user.id}: no reference location set`);
+      return [];
+    }
+
+    // Step 1: Time filter — events that start within the open window
+    const windowBufferMs = 30 * 60 * 1000;
+    const windowStart = new Date(window.start.getTime() - windowBufferMs);
+    const windowEnd = new Date(window.end.getTime() + windowBufferMs);
+
+    // Step 5: Already-proposed filter — skip events proposed to this user in last 60 days
+    const sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000);
+    const recentlyProposed = await UserEventRecommendation.findAll({
+      where: {
+        user_id: user.id,
+        proposed_at: { [Op.gte]: sixtyDaysAgo },
+      },
+      attributes: ['event_id'],
+    });
+    const excludedIds = [
+      ...recentlyProposed.map(r => r.event_id),
+      ...alreadyProposedIds,
+    ];
+
+    // Step 4: Category match
+    const preferredTypes = prefs.event_types ?? [];
+
+    const where: Record<string, any> = {
+      is_active: true,
+      city: user.city ?? 'denver',
+    };
+
+    if (excludedIds.length > 0) {
+      where.id = { [Op.notIn]: excludedIds };
+    }
+
+    if (preferredTypes.length > 0) {
+      // Map preference keywords to EventType values
+      const typeMap: Record<string, string[]> = {
+        happy_hour: ['bar'],
+        concert: ['concert'],
+        trivia: ['trivia'],
+        comedy: ['comedy'],
+        art: ['art'],
+        market: ['market'],
+        festival: ['festival'],
+        outdoor: ['park', 'social'],
+        film: ['film'],
+        class: ['class'],
+      };
+      const eventTypes = [...new Set(
+        preferredTypes.flatMap(t => typeMap[t] ?? [t])
+      )];
+      if (eventTypes.length > 0) {
+        where.type = { [Op.in]: eventTypes };
+      }
+    }
+
+    // Fetch recurring events + one-time events whose time falls in the window
+    const currentDayOfWeek = window.start.getDay();
+
+    const allEvents = await Event.findAll({ where });
+
+    // Steps 1–4 + 5 applied programmatically
+    const filtered = allEvents.filter(event => {
+      const loc = event.location as any;
+      const coords = loc?.coordinates;
+
+      // Skip invalid coordinates
+      if (!coords || (coords[0] === 0 && coords[1] === 0)) return false;
+
+      // Step 2: Distance filter
+      const distanceMiles = calculateDistanceMiles(refLocation.coordinates, coords);
+      if (distanceMiles > maxDistanceMiles) return false;
+
+      // Step 3: Budget filter
+      const eventMaxPrice = (event.price as any)?.max;
+      if (eventMaxPrice !== undefined && eventMaxPrice !== null && eventMaxPrice > maxPrice) return false;
+
+      // Step 1 (time): recurring events match if today is a valid day
+      if (event.recurring) {
+        const recurrence = event.recurrence_pattern as any;
+        const happyHourSched = event.happy_hour_schedule as any;
+
+        // Check day-of-week
+        const validDays: number[] = recurrence?.dayOfWeek ?? [];
+        if (!validDays.includes(currentDayOfWeek)) return false;
+
+        // Check time falls within open window
+        const startHour = happyHourSched?.start
+          ? parseInt(happyHourSched.start.split(':')[0], 10)
+          : (event.datetime as any)?.start
+          ? new Date((event.datetime as any).start).getHours()
+          : 17; // default 5pm
+
+        const eventStartTime = new Date(window.start);
+        eventStartTime.setHours(startHour, 0, 0, 0);
+
+        if (eventStartTime < windowStart || eventStartTime > windowEnd) return false;
+      } else {
+        // One-time event — check actual start time
+        const eventStart = new Date((event.datetime as any)?.start);
+        if (isNaN(eventStart.getTime())) return false;
+        if (eventStart < windowStart || eventStart > windowEnd) return false;
+      }
+
+      return true;
+    });
+
+    // Step 6: Score candidates
+    const scored = filtered.map(event => {
+      const loc = event.location as any;
+      const distanceMiles = calculateDistanceMiles(refLocation.coordinates, loc.coordinates);
+      const tags: string[] = (event.tags as any) ?? [];
+
+      // Base score: tag overlap with user preferences
+      const allPrefTags = [
+        ...(prefs.event_types ?? []),
+        ...(prefs.drink ?? []),
+        ...(prefs.vibe ?? []),
+      ];
+      const overlap = tags.filter(t => allPrefTags.includes(t)).length;
+      let score = overlap;
+
+      // Apply interest matrix weights
+      for (const tag of tags) {
+        const weight = matrix.tag_weights[tag] ?? 1.0;
+        score += (weight - 1.0) * 0.5; // additive boost/decay from weights
+      }
+
+      // Boost: free events for budget-conscious users
+      const eventMaxPrice = (event.price as any)?.max ?? 0;
+      if (eventMaxPrice === 0 && (budget === 'free' || budget === 'budget')) {
+        score += 0.3;
+      }
+
+      // Boost: walkable (within 1 mile)
+      if (distanceMiles <= 1) score += 0.2;
+
+      // Decay: events recently proposed to *any* user get a small freshness boost for less-seen events
+      // (implemented as a flat small decay for all — freshness is implicit via excluded IDs)
+
+      return { event, score };
+    });
+
+    // Step 7: Pick top N — deduplicate by venue
+    scored.sort((a, b) => b.score - a.score);
+
+    const seenVenues = new Set<string>();
+    const results: { event: Event; score: number }[] = [];
+
+    for (const candidate of scored) {
+      const venueName = (candidate.event as any).venue_name ?? candidate.event.title;
+      if (seenVenues.has(venueName)) continue;
+      seenVenues.add(venueName);
+      results.push(candidate);
+      if (results.length >= (user.max_proposals_per_run ?? 3)) break;
+    }
+
+    return results;
+  }
+
+  // ─── Legacy: generate and send via email (kept for backward compat) ────────
+
+  async generateAndSendRecommendations(): Promise<void> {
     try {
-      await this.updateEventsDatabase();
-      
       const users = await User.findAll();
       for (const user of users) {
-        const recommendations = await this.getRecommendationsForUser(user);
-        if (recommendations.length > 0) {
-          await emailService.sendRecommendations(user.email, recommendations);
-          await this.recordSentRecommendations(user.id, recommendations);
+        try {
+          const recommendations = await this.getRecommendationsForUser(user);
+          if (recommendations.length > 0) {
+            await emailService.sendRecommendations(user.email, recommendations);
+            await this.recordSentRecommendations(user.id, recommendations);
+          }
+        } catch (err) {
+          console.error(`Error for user ${user.id}:`, err);
         }
       }
     } catch (error) {
@@ -44,257 +337,173 @@ class RecommendationEngine {
     }
   }
 
-  async updateEventsDatabase() {
-    await Event.update(
-      { is_active: false },
-      {
-        where: {
-          recurring: false,
-          'datetime.end': { [Op.lt]: new Date() }
-        }
-      }
-    );
-
-    const locations = await this.getUniqueUserLocations();
-    
-    for (const location of locations) {
-      const concerts = await scraper.scrapeEventbrite({ coordinates: location, type: 'Point' }) as RawEvent[];
-      const bars = await scraper.scrapeYelp({ coordinates: location, type: 'Point' }, ['cocktailbars']) as RawEvent[];
-
-      for (const event of concerts) {
-        const [existingEvent] = await Event.findOrCreate({
-          where: {
-            source: 'eventbrite',
-            source_url: event.sourceUrl
-          },
-          defaults: {
-            title: event.title,
-            description: event.description,
-            source: 'eventbrite',
-            source_url: event.sourceUrl,
-            type: 'concert',
-            price: {
-              min: event.price.min ?? 0,
-              max: event.price.max ?? 0
-            },
-            location: {
-              type: 'Point',
-              coordinates: event.location.coordinates,
-              address: event.location.address
-            },
-            datetime: event.datetime,
-            is_active: true,
-            recurring: event.recurring ?? false,
-            recurrence_pattern: event.recurrencePattern,
-            last_checked: new Date()
-          }
-        });
-
-        if (existingEvent) {
-          await existingEvent.update({
-            title: event.title,
-            description: event.description,
-            price: {
-              min: event.price.min ?? 0,
-              max: event.price.max ?? 0
-            },
-            location: {
-              type: 'Point',
-              coordinates: event.location.coordinates,
-              address: event.location.address
-            },
-            datetime: event.datetime,
-            is_active: true,
-            recurring: event.recurring ?? false,
-            recurrence_pattern: event.recurrencePattern,
-            last_checked: new Date()
-          });
-        }
-      }
-
-      for (const event of bars) {
-        const [existingEvent] = await Event.findOrCreate({
-          where: {
-            source: 'yelp',
-            source_url: event.sourceUrl
-          },
-          defaults: {
-            title: event.title,
-            description: event.description,
-            source: 'yelp',
-            source_url: event.sourceUrl,
-            type: 'bar',
-            price: {
-              min: event.price.min ?? 0,
-              max: event.price.max ?? 0
-            },
-            location: {
-              type: 'Point',
-              coordinates: event.location.coordinates,
-              address: event.location.address
-            },
-            datetime: event.datetime,
-            is_active: true,
-            recurring: event.recurring ?? false,
-            recurrence_pattern: event.recurrencePattern,
-            last_checked: new Date()
-          }
-        });
-
-        if (existingEvent) {
-          await existingEvent.update({
-            title: event.title,
-            description: event.description,
-            price: {
-              min: event.price.min ?? 0,
-              max: event.price.max ?? 0
-            },
-            location: {
-              type: 'Point',
-              coordinates: event.location.coordinates,
-              address: event.location.address
-            },
-            datetime: event.datetime,
-            is_active: true,
-            recurring: event.recurring ?? false,
-            recurrence_pattern: event.recurrencePattern,
-            last_checked: new Date()
-          });
-        }
-      }
-    }
-  }
-
-  async getRecommendationsForUser(user: User) {
+  /** Legacy email-based recommendations (uses old preference schema) */
+  async getRecommendationsForUser(user: User): Promise<Event[]> {
     const now = new Date();
-    const tomorrow = new Date(now);
-    tomorrow.setDate(tomorrow.getDate() + 1);
     const currentDayOfWeek = now.getDay();
 
-    // Get events sent to this user in the last week
-    const oneWeekAgo = new Date(now);
-    oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
-    
-    const recentlyRecommendedEventIds = await UserEventRecommendation.findAll({
-      where: {
-        user_id: user.id,
-        sent_at: {
-          [Op.gte]: oneWeekAgo
-        }
-      },
-      attributes: ['event_id']
-    }).then(recommendations => recommendations.map(rec => rec.event_id));
+    const sixtyDaysAgo = new Date(now);
+    sixtyDaysAgo.setDate(sixtyDaysAgo.getDate() - 7);
 
-    const where: WhereQuery = {
+    const recentlyRecommendedEventIds = await UserEventRecommendation.findAll({
+      where: { user_id: user.id, sent_at: { [Op.gte]: sixtyDaysAgo } },
+      attributes: ['event_id'],
+    }).then(recs => recs.map(r => r.event_id));
+
+    const where: Record<string, any> = {
       is_active: true,
-      id: {
-        [Op.notIn]: recentlyRecommendedEventIds
-      },
-      [Op.or]: [
-        {
-          recurring: false,
-          'datetime.start': { 
-            [Op.gte]: new Date(now.getTime() - 3600000),
-            [Op.lt]: tomorrow 
-          }
-        },
-        {
-          recurring: true
-        }
-      ]
     };
 
-    const typeFilters: EventType[] = [];
-    if (user.preferences.cocktailBars) typeFilters.push('bar');
-    if (user.preferences.concerts) typeFilters.push('concert');
-    if (user.preferences.painting) typeFilters.push('art');
-    if (typeFilters.length > 0) {
-      where.type = { [Op.in]: typeFilters };
+    if (recentlyRecommendedEventIds.length > 0) {
+      where.id = { [Op.notIn]: recentlyRecommendedEventIds };
     }
 
-    // Get all potential events
-    const events = await Event.findAll({
-      where: where,
-      order: sequelize.random()
-    });
+    const events = await Event.findAll({ where });
 
-    // Filter and sort events by distance and price range
-    const maxDistance = user.preferences.maxDistance; // in kilometers
-    const userCoords = user.location.coordinates;
-    const maxBudget = user.preferences.priceRange.max;
-    
-    const validEvents = events.filter(event => {
-      // Skip events with invalid coordinates
-      if (!event.location.coordinates || 
-          (event.location.coordinates[0] === 0 && event.location.coordinates[1] === 0)) {
-        return false;
-      }
+    const prefs = user.preferences as any;
+    const maxDistance = prefs?.maxDistance ?? prefs?.max_distance_miles ?? 10;
+    const userCoords =
+      (user.home_location as any)?.coordinates ??
+      (user.location as any)?.coordinates ??
+      null;
 
-      // Check if event is within max distance
-      const distance = calculateDistance(userCoords, event.location.coordinates);
-      if (distance > maxDistance) {
-        return false;
-      }
+    if (!userCoords) return [];
 
-      // Check if event price is within budget
-      if (event.price?.max && event.price.max > maxBudget) {
-        return false;
-      }
+    const maxBudget = prefs?.priceRange?.max ?? BUDGET_MAX_PRICE[prefs?.budget ?? 'moderate'];
 
-      // For recurring events, check if it's happening today
+    const valid = events.filter(event => {
+      const coords = (event.location as any)?.coordinates;
+      if (!coords || (coords[0] === 0 && coords[1] === 0)) return false;
+
+      const distance = calculateDistanceMiles(userCoords, coords);
+      if (distance > maxDistance) return false;
+
+      if ((event.price as any)?.max && (event.price as any).max > maxBudget) return false;
+
       if (event.recurring) {
-        if (!event.recurrence_pattern?.dayOfWeek) return false;
-        return event.recurrence_pattern.dayOfWeek.includes(currentDayOfWeek);
+        return (event.recurrence_pattern as any)?.dayOfWeek?.includes(currentDayOfWeek) ?? false;
       }
 
       return true;
     });
 
-    // Sort events by a combination of distance and price match
-    const sortedEvents = validEvents.sort((a, b) => {
-      const distanceA = calculateDistance(userCoords, a.location.coordinates);
-      const distanceB = calculateDistance(userCoords, b.location.coordinates);
-      
-      // Normalize distances and prices to 0-1 range
-      const normalizedDistanceA = distanceA / maxDistance;
-      const normalizedDistanceB = distanceB / maxDistance;
-      
-      const priceA = a.price?.max || 0;
-      const priceB = b.price?.max || 0;
-      const normalizedPriceA = priceA / maxBudget;
-      const normalizedPriceB = priceB / maxBudget;
-      
-      // Combined score (70% distance, 30% price)
-      const scoreA = (normalizedDistanceA * 0.7) + (normalizedPriceA * 0.3);
-      const scoreB = (normalizedDistanceB * 0.7) + (normalizedPriceB * 0.3);
-      
-      return scoreA - scoreB;
+    valid.sort((a, b) => {
+      const da = calculateDistanceMiles(userCoords, (a.location as any).coordinates);
+      const db = calculateDistanceMiles(userCoords, (b.location as any).coordinates);
+      return da - db;
     });
 
-    // Return top 3 recommendations
-    const recommendations = sortedEvents.slice(0, 3);
-    
-    console.log(`Found ${recommendations.length} matching events across different price ranges`);
-    return recommendations;
+    return valid.slice(0, 3);
   }
 
-  async recordSentRecommendations(userId: number, events: Event[]) {
-    const recommendations = events.map(event => ({
-      user_id: userId,
-      event_id: event.id,
-      sent_at: new Date()
-    }));
-
-    await UserEventRecommendation.bulkCreate(recommendations);
+  async recordSentRecommendations(userId: number, events: Event[]): Promise<void> {
+    await UserEventRecommendation.bulkCreate(
+      events.map(event => ({ user_id: userId, event_id: event.id, sent_at: new Date() }))
+    );
   }
+
+  // ─── Feedback loop ────────────────────────────────────────────────────────
+
+  /**
+   * Polls Google Calendar for each pending proposal.
+   * Updates user_response and adjusts interest_matrix accordingly.
+   * Runs every 6 hours.
+   */
+  async pollCalendarFeedback(): Promise<void> {
+    const pendingRecs = await UserEventRecommendation.findAll({
+      where: {
+        user_response: 'pending',
+        google_calendar_event_id: { [Op.ne]: null },
+        proposed_at: { [Op.ne]: null },
+      },
+      include: [
+        { model: User },
+        { model: Event },
+      ],
+    });
+
+    console.log(`[FeedbackLoop] Checking ${pendingRecs.length} pending proposals`);
+
+    for (const rec of pendingRecs) {
+      try {
+        const user = (rec as any).User as User;
+        const event = (rec as any).Event as Event;
+
+        if (!user?.google_access_token || !rec.google_calendar_event_id) continue;
+
+        const status = await calendarService.checkProposalStatus(user, rec.google_calendar_event_id);
+
+        if (status === 'pending') continue; // nothing changed
+
+        await rec.update({
+          user_response: status,
+          response_detected_at: new Date(),
+        });
+
+        // Update interest matrix
+        if (event?.tags) {
+          await this.updateInterestMatrix(user, event.tags as string[], status);
+        }
+
+        console.log(`[FeedbackLoop] User ${user.id}: "${event?.title}" → ${status}`);
+      } catch (err) {
+        console.error(`[FeedbackLoop] Error processing rec ${rec.id}:`, err);
+      }
+    }
+  }
+
+  private async updateInterestMatrix(
+    user: User,
+    tags: string[],
+    response: 'kept' | 'deleted'
+  ): Promise<void> {
+    const matrix = (user.interest_matrix as InterestMatrix) ?? defaultMatrix();
+    const delta = response === 'kept' ? 0.2 : -0.1;
+    const updated = applyTagWeightUpdates(matrix, tags, delta);
+
+    // Also update venue_history for 'kept' events
+    // (venue_name lives on the event — handled via tags for simplicity)
+
+    await user.update({ interest_matrix: updated });
+  }
+
+  // ─── Utilities ────────────────────────────────────────────────────────────
 
   async getUniqueUserLocations(): Promise<number[][]> {
-    const users = await User.findAll({
-      attributes: ['location'],
-      group: ['location']
-    });
-    return users.map(user => user.location.coordinates);
+    const users = await User.findAll({ attributes: ['home_location', 'location'] });
+    return users
+      .map(u => (u.home_location as any)?.coordinates ?? (u.location as any)?.coordinates)
+      .filter(Boolean);
+  }
+
+  /** Determines whether a user's schedule matches the current time */
+  private userMatchesSchedule(user: User, todayName: string, currentHourUtc: number): boolean {
+    const days = user.recommendation_days ?? [];
+    if (!days.includes(todayName)) return false;
+
+    const freq = user.recommendation_frequency ?? 'weekly';
+    const time = user.recommendation_time ?? 'morning';
+
+    // morning = ~14:00 UTC (7am MST), midday = ~18:00 UTC (11am MST)
+    const targetHour = time === 'morning' ? 14 : 18;
+    if (currentHourUtc !== targetHour) return false;
+
+    if (freq === 'daily') return true;
+
+    const dow = new Date().getDay(); // 0=Sun
+
+    if (freq === '2x_week') {
+      // Monday (1) and Thursday (4)
+      return dow === 1 || dow === 4;
+    }
+
+    if (freq === 'weekly') {
+      // Monday only
+      return dow === 1;
+    }
+
+    return false;
   }
 }
 
-export default new RecommendationEngine(); 
+export default new RecommendationEngine();

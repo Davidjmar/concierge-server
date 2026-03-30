@@ -1,31 +1,16 @@
 import sequelize from '../config/database.js';
 import pkg from 'sequelize';
 const { Model, DataTypes } = pkg;
-
-type EventSource = 'eventbrite' | 'yelp' | 'reddit' | 'local_blog';
-type EventType = 'concert' | 'bar' | 'restaurant' | 'art' | 'sports' | 'social';
-
-interface EventPrice {
-  min?: number;
-  max?: number;
-}
-
-interface EventLocation {
-  type: string;
-  coordinates: number[];
-  address?: string;
-}
-
-interface EventDatetime {
-  start: Date;
-  end: Date;
-}
-
-interface RecurrencePattern {
-  frequency: string;
-  dayOfWeek: number[];
-  dayOfMonth?: number;
-}
+import {
+  EventSource,
+  EventType,
+  EventPrice,
+  EventLocation,
+  EventDatetime,
+  RecurrencePattern,
+  HappyHourSchedule,
+  ExternalIds,
+} from '../types/index.js';
 
 class Event extends Model {
   declare id: number;
@@ -41,6 +26,15 @@ class Event extends Model {
   declare recurring?: boolean;
   declare recurrence_pattern?: RecurrencePattern;
   declare last_checked?: Date;
+
+  // Phase 1 additions
+  declare city: string;
+  declare neighborhood?: string;
+  declare venue_name?: string;
+  declare tags?: string[];
+  declare happy_hour_schedule?: HappyHourSchedule;
+  declare external_ids?: ExternalIds;
+  declare image_url?: string;
 }
 
 Event.init(
@@ -58,14 +52,38 @@ Event.init(
       type: DataTypes.TEXT,
     },
     source: {
-      type: DataTypes.ENUM('eventbrite', 'yelp', 'reddit', 'local_blog'),
+      type: DataTypes.ENUM(
+        'eventbrite',
+        'yelp',
+        'goldenbuzz',
+        'westword',
+        'google_sheets',
+        'denver_gov',
+        'manual',
+        'reddit',
+        'local_blog'
+      ),
       allowNull: false,
     },
     source_url: {
       type: DataTypes.STRING,
     },
     type: {
-      type: DataTypes.ENUM('concert', 'bar', 'restaurant', 'art', 'sports', 'social'),
+      type: DataTypes.ENUM(
+        'concert',
+        'bar',
+        'restaurant',
+        'art',
+        'sports',
+        'social',
+        'festival',
+        'class',
+        'comedy',
+        'trivia',
+        'film',
+        'market',
+        'park'
+      ),
       allowNull: false,
     },
     price: {
@@ -94,6 +112,37 @@ Event.init(
     last_checked: {
       type: DataTypes.DATE,
     },
+    city: {
+      type: DataTypes.STRING,
+      allowNull: true,
+      defaultValue: 'denver',
+    },
+    neighborhood: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
+    venue_name: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
+    tags: {
+      type: DataTypes.ARRAY(DataTypes.TEXT),
+      allowNull: true,
+      defaultValue: [],
+    },
+    happy_hour_schedule: {
+      type: DataTypes.JSONB,
+      allowNull: true,
+    },
+    external_ids: {
+      type: DataTypes.JSONB,
+      allowNull: true,
+      defaultValue: {},
+    },
+    image_url: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
   },
   {
     sequelize,
@@ -108,6 +157,9 @@ Event.init(
         fields: ['type'],
       },
       {
+        fields: ['city'],
+      },
+      {
         fields: ['source', 'source_url'],
         unique: true,
         where: {
@@ -120,4 +172,4 @@ Event.init(
   }
 );
 
-export default Event; 
+export default Event;

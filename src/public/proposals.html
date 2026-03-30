@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>kno — my proposals</title>
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet" />
+</head>
+<body>
+
+<nav class="nav">
+  <a href="/" class="nav-logo">kno</a>
+  <div class="nav-links">
+    <a href="/proposals">My proposals</a>
+    <a href="/auth/logout">Sign out</a>
+  </div>
+</nav>
+
+<div class="container" style="margin-top:1.5rem">
+
+  <div id="loading" style="text-align:center;padding:3rem;color:var(--muted)">Loading…</div>
+
+  <div id="proposals-container" style="display:none">
+
+    <div style="margin-bottom:1.5rem">
+      <h1 style="font-size:1.5rem;font-weight:800">Your proposals</h1>
+      <p class="text-muted text-sm">Upcoming and past suggestions from kno. Keep or delete them on your Google Calendar.</p>
+    </div>
+
+    <!-- Upcoming / pending -->
+    <div id="section-pending">
+      <p style="font-size:0.8rem;font-weight:600;letter-spacing:0.08em;color:var(--muted);text-transform:uppercase;margin-bottom:0.75rem">
+        Upcoming suggestions
+      </p>
+      <div id="list-pending"></div>
+    </div>
+
+    <hr class="divider" />
+
+    <!-- Past -->
+    <div id="section-past">
+      <p style="font-size:0.8rem;font-weight:600;letter-spacing:0.08em;color:var(--muted);text-transform:uppercase;margin-bottom:0.75rem">
+        Past suggestions
+      </p>
+      <div id="list-past"></div>
+    </div>
+
+  </div>
+
+  <div id="empty" style="display:none">
+    <div class="empty-state">
+      <h2>No proposals yet</h2>
+      <p>kno will start dropping suggestions on your calendar soon. Check back in a bit.</p>
+    </div>
+  </div>
+
+</div>
+
+<script>
+(async () => {
+  const params = new URLSearchParams(window.location.search);
+  // Try cookie first, fall back to query param for redirect flow
+  const getCookie = name => document.cookie.split('; ').find(r => r.startsWith(name + '='))?.split('=')[1];
+  const userId = getCookie('kno_user_id') || params.get('uid');
+
+  if (!userId) {
+    window.location.href = '/';
+    return;
+  }
+
+  try {
+    const res = await fetch(`/api/proposals/${userId}`);
+    if (!res.ok) throw new Error('Failed to fetch proposals');
+    const { proposals } = await res.json();
+
+    document.getElementById('loading').style.display = 'none';
+
+    if (!proposals || proposals.length === 0) {
+      document.getElementById('empty').style.display = 'block';
+      return;
+    }
+
+    document.getElementById('proposals-container').style.display = 'block';
+
+    const pending = proposals.filter(p => p.user_response === 'pending');
+    const past = proposals.filter(p => p.user_response !== 'pending');
+
+    const renderCard = p => {
+      const tags = (p.event?.tags ?? []).slice(0, 4).map(t =>
+        `<span class="proposal-tag">${t.replace(/_/g, ' ')}</span>`
+      ).join('');
+
+      const badge = p.user_response === 'kept'
+        ? '<span class="badge badge-kept">Kept ✓</span>'
+        : p.user_response === 'deleted'
+        ? '<span class="badge badge-deleted">Passed</span>'
+        : '<span class="badge badge-pending">Upcoming</span>';
+
+      const price = p.event?.price
+        ? p.event.price.min === 0 && p.event.price.max === 0
+          ? '🆓 Free'
+          : `💰 $${p.event.price.min}–$${p.event.price.max}`
+        : '';
+
+      const address = p.event?.location?.address ?? '';
+      const dateStr = p.event?.datetime?.start
+        ? new Date(p.event.datetime.start).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+        : '';
+
+      const passBtn = p.user_response === 'pending'
+        ? `<button class="pass-btn" onclick="passProposal(${p.id}, this)">Pass on this</button>`
+        : '';
+
+      return `
+        <div class="proposal-card ${p.user_response}" id="proposal-${p.id}">
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:1rem">
+            <span class="proposal-title">${p.event?.title ?? 'Event'}</span>
+            ${badge}
+          </div>
+          <div class="proposal-meta">
+            ${dateStr ? `📅 ${dateStr}` : ''}
+            ${address ? ` · 📍 ${address}` : ''}
+            ${price ? ` · ${price}` : ''}
+          </div>
+          ${tags ? `<div class="proposal-tags">${tags}</div>` : ''}
+          ${passBtn}
+        </div>
+      `;
+    };
+
+    document.getElementById('list-pending').innerHTML =
+      pending.length ? pending.map(renderCard).join('') :
+      '<p class="text-muted text-sm">No upcoming proposals right now.</p>';
+
+    document.getElementById('list-past').innerHTML =
+      past.length ? past.map(renderCard).join('') :
+      '<p class="text-muted text-sm">No past proposals yet.</p>';
+
+  } catch (err) {
+    document.getElementById('loading').innerHTML =
+      '<p style="color:var(--accent)">Failed to load proposals. Please refresh.</p>';
+  }
+})();
+
+async function passProposal(recommendationId, btn) {
+  if (!confirm('Pass on this suggestion?')) return;
+  btn.textContent = 'Passing…';
+  btn.disabled = true;
+  try {
+    const res = await fetch(`/api/proposals/${recommendationId}/pass`, { method: 'POST' });
+    if (!res.ok) throw new Error();
+    const card = document.getElementById(`proposal-${recommendationId}`);
+    card.classList.remove('pending');
+    card.classList.add('deleted');
+    card.querySelector('.badge').outerHTML = '<span class="badge badge-deleted">Passed</span>';
+    btn.remove();
+  } catch {
+    btn.textContent = 'Pass on this';
+    btn.disabled = false;
+  }
+}
+</script>
+</body>
+</html>
