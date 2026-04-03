@@ -14,6 +14,9 @@ COPY . .
 # Build TypeScript
 RUN npm run build || (echo "Build failed" && exit 1)
 
+# Copy static assets (not handled by tsc)
+RUN cp -r src/public dist/public
+
 # Expose port
 EXPOSE 3000
 
