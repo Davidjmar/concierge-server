@@ -54,6 +54,20 @@ router.get('/users/:email', async (req: Request, res: Response) => {
   }
 });
 
+// ─── Onboarding — status check ────────────────────────────────────────────────
+
+router.get('/users/onboarding/status', async (req: Request, res: Response) => {
+  try {
+    const userId = parseInt(req.query.userId as string, 10);
+    if (isNaN(userId)) return res.status(400).json({ error: 'Invalid userId' });
+    const user = await User.findByPk(userId, { attributes: ['id', 'onboarding_complete'] });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    res.json({ onboarding_complete: user.onboarding_complete ?? false });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message ?? 'Unknown error' });
+  }
+});
+
 // ─── Onboarding — Step 2: Locations ───────────────────────────────────────────
 
 router.post('/users/onboarding/locations', async (req: Request, res: Response) => {

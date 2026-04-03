@@ -36,7 +36,23 @@ const state = {
     localStorage.setItem('kno_user_id', uid);
   } else {
     const stored = localStorage.getItem('kno_user_id');
-    if (stored) state.userId = parseInt(stored, 10);
+    if (stored) {
+      state.userId = parseInt(stored, 10);
+      // Already connected — check onboarding status
+      if (step === 1) {
+        fetch(`/api/users/onboarding/status?userId=${stored}`)
+          .then(r => r.json())
+          .then(data => {
+            if (data.onboarding_complete) {
+              window.location.href = `/proposals`;
+            } else {
+              goTo(2);
+            }
+          })
+          .catch(() => goTo(2));
+        return;
+      }
+    }
   }
 
   // Chip grids
