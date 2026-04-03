@@ -31,7 +31,13 @@ const state = {
   const step = parseInt(params.get('step') ?? '1', 10);
   const uid = params.get('uid');
 
-  if (uid) state.userId = parseInt(uid, 10);
+  if (uid) {
+    state.userId = parseInt(uid, 10);
+    localStorage.setItem('kno_user_id', uid);
+  } else {
+    const stored = localStorage.getItem('kno_user_id');
+    if (stored) state.userId = parseInt(stored, 10);
+  }
 
   // Chip grids
   document.querySelectorAll('.chip').forEach(chip => {

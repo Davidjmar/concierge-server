@@ -61,9 +61,10 @@
 <script>
 (async () => {
   const params = new URLSearchParams(window.location.search);
-  // Try cookie first, fall back to query param for redirect flow
-  const getCookie = name => document.cookie.split('; ').find(r => r.startsWith(name + '='))?.split('=')[1];
-  const userId = getCookie('kno_user_id') || params.get('uid');
+  // Try query param first (redirect flow), then localStorage (returning user)
+  const uidParam = params.get('uid');
+  if (uidParam) localStorage.setItem('kno_user_id', uidParam);
+  const userId = uidParam || localStorage.getItem('kno_user_id');
 
   if (!userId) {
     window.location.href = '/';
