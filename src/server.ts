@@ -37,9 +37,8 @@ await initDatabase();
 // ─────────────────────────────────────────────────────────────────────────────
 // Cron Schedule (all times UTC):
 //
-//  Yelp happy hours:     Sunday 2 AM UTC       (weekly)
 //  Eventbrite:           Monday 3 AM UTC        (weekly)
-//  Westword:             Friday 6 AM UTC        (weekly, after Thu publish)
+//  Westword:             Daily 5 AM UTC
 //  GoldenBuzz:           Monday 3 AM UTC        (weekly, alongside Eventbrite)
 //  Google Sheets:        Every 4 hours          (fast feedback loop for manual additions)
 //  Calendar feedback:    Every 6 hours          (poll for proposal accept/decline)
@@ -88,20 +87,6 @@ cron.schedule('0 3 * * 1', async () => {
   }
 });
 
-// ── Yelp — Sunday 2 AM UTC ─────────────────────────────────────────────────────
-cron.schedule('0 2 * * 0', async () => {
-  console.log('[Cron] Yelp happy hour scrape starting…');
-  try {
-    const scraper = new Scraper();
-    const yelpEvents = await scraper.scrapeYelp(
-      { type: 'Point', coordinates: [DENVER.center.lng, DENVER.center.lat] },
-      ['bars', 'restaurants', 'pubs', 'cocktailbars']
-    );
-    await upsertRawEvents(yelpEvents, 'Yelp');
-  } catch (err) {
-    console.error('[Cron] Yelp error:', err);
-  }
-});
 
 // ── Westword — daily 5 AM UTC (11 PM MDT) ────────────────────────────────────
 cron.schedule('0 5 * * *', async () => {
@@ -158,19 +143,6 @@ app.post('/api/debug/scrape-eventbrite', async (_req, res) => {
   }
 });
 
-app.post('/api/debug/scrape-yelp', async (_req, res) => {
-  try {
-    const scraper = new Scraper();
-    const events = await scraper.scrapeYelp(
-      { type: 'Point', coordinates: [DENVER.center.lng, DENVER.center.lat] },
-      ['bars', 'restaurants', 'pubs', 'cocktailbars']
-    );
-    await upsertRawEvents(events, 'Yelp');
-    res.json({ ok: true, count: events.length });
-  } catch (err: any) {
-    res.status(500).json({ error: err?.message ?? 'Unknown error' });
-  }
-});
 
 app.post('/api/debug/scrape-sheets', async (_req, res) => {
   try {
@@ -221,16 +193,6 @@ app.post('/api/debug/scrape-all', async (_req, res) => {
     await upsertRawEvents(eb, 'Eventbrite');
     results.eventbrite = eb.length;
   } catch (err) { console.error('[ScrapeAll] Eventbrite error:', err); }
-
-  try {
-    console.log('[ScrapeAll] Yelp…');
-    const yelp = await scraper.scrapeYelp(
-      { type: 'Point', coordinates: [DENVER.center.lng, DENVER.center.lat] },
-      ['bars', 'restaurants', 'pubs', 'cocktailbars']
-    );
-    await upsertRawEvents(yelp, 'Yelp');
-    results.yelp = yelp.length;
-  } catch (err) { console.error('[ScrapeAll] Yelp error:', err); }
 
   try {
     console.log('[ScrapeAll] Google Sheets…');
