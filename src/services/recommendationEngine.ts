@@ -384,6 +384,15 @@ class RecommendationEngine {
       // Boost: walkable (within 1 mile)
       if (distanceMiles <= 1) score += 0.2;
 
+      // Decay: alcohol-centric events score lower Mon–Wed
+      // Still eligible, just deprioritised vs. non-bar alternatives
+      const ALCOHOL_TAGS = ['happy_hour', 'bar', 'craft_beer', 'cocktails', 'wine'];
+      const dayOfWeek = window.start.getUTCDay(); // 0=Sun, 1=Mon … 6=Sat
+      const isEarlyWeek = dayOfWeek >= 1 && dayOfWeek <= 3; // Mon, Tue, Wed
+      if (isEarlyWeek && (ALCOHOL_TAGS.some(t => tags.includes(t)) || event.type === 'bar')) {
+        score -= 0.5;
+      }
+
       return { event, score };
     });
 
