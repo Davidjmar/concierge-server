@@ -125,6 +125,14 @@ class RecommendationEngine {
     return count > 0;
   }
 
+  /** Returns how many proposals have been created for a user in the last 7 days. */
+  private async proposalsThisWeek(userId: number): Promise<number> {
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    return UserEventRecommendation.count({
+      where: { user_id: userId, proposed_at: { [Op.gte]: sevenDaysAgo } },
+    });
+  }
+
   /**
    * Full recommendation run for a single user:
    * 1. Check Google Calendar availability
@@ -147,13 +155,22 @@ class RecommendationEngine {
       return;
     }
 
-    const maxProposals = user.max_proposals_per_run ?? 3;
+    // max_proposals_per_run is a weekly budget — check how many already sent this week
+    const weeklyLimit = user.max_proposals_per_run ?? 3;
+    const alreadySentThisWeek = await this.proposalsThisWeek(user.id);
+    const remaining = weeklyLimit - alreadySentThisWeek;
+
+    if (remaining <= 0) {
+      console.log(`User ${user.id}: weekly proposal limit (${weeklyLimit}) reached — skipping`);
+      return;
+    }
+
     const proposals: { event: Event; score: number }[] = [];
 
     for (const window of openWindows) {
-      if (proposals.length >= maxProposals) break;
+      if (proposals.length >= remaining) break;
       const candidates = await this.getCandidatesForWindow(user, window, proposals.map(p => p.event.id));
-      proposals.push(...candidates.slice(0, maxProposals - proposals.length));
+      proposals.push(...candidates.slice(0, remaining - proposals.length));
     }
 
     if (proposals.length === 0) {
