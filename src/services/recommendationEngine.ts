@@ -79,15 +79,15 @@ class RecommendationEngine {
 
   /**
    * Called by the hourly cron tick.
-   * Dispatches only users whose schedule matches the current time.
+   * Dispatches only users whose schedule matches the current day.
+   * All frequencies use a once-per-UTC-day guard — no hour targeting.
    */
   async runForEligibleUsers(): Promise<void> {
     const now = new Date();
     const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
     const todayName = dayNames[now.getUTCDay()];
-    const currentHourUtc = now.getUTCHours();
 
-    console.log(`[RecommendationEngine] Tick — UTC ${currentHourUtc}:00, day=${todayName}`);
+    console.log(`[RecommendationEngine] Tick — UTC ${now.getUTCHours()}:00, day=${todayName}`);
 
     const users = await User.findAll({
       where: { onboarding_complete: true },
@@ -95,17 +95,13 @@ class RecommendationEngine {
 
     for (const user of users) {
       try {
-        const shouldRun = this.userMatchesSchedule(user, todayName, currentHourUtc);
-        if (!shouldRun) continue;
+        if (!this.userMatchesSchedule(user, todayName)) continue;
 
-        // Daily-frequency users: only run once per UTC day
-        const freq = user.recommendation_frequency ?? 'weekly';
-        if (freq === 'daily') {
-          const alreadyRan = await this.userAlreadyRanToday(user.id);
-          if (alreadyRan) {
-            console.log(`[RecommendationEngine] User ${user.id}: already proposed today — skipping`);
-            continue;
-          }
+        // All frequencies: only run once per UTC day
+        const alreadyRan = await this.userAlreadyRanToday(user.id);
+        if (alreadyRan) {
+          console.log(`[RecommendationEngine] User ${user.id}: already proposed today — skipping`);
+          continue;
         }
 
         console.log(`[RecommendationEngine] Running for user ${user.id} (${user.email})`);
@@ -568,30 +564,24 @@ class RecommendationEngine {
       .filter(Boolean);
   }
 
-  /** Determines whether a user's schedule matches the current time */
-  private userMatchesSchedule(user: User, todayName: string, currentHourUtc: number): boolean {
+  /**
+   * Determines whether a user's schedule matches today.
+   * No hour-of-day targeting — proposals fire on the first cron tick of the day
+   * that matches the user's day list and frequency. The once-per-day guard in
+   * runForEligibleUsers prevents duplicates.
+   */
+  private userMatchesSchedule(user: User, todayName: string): boolean {
     const days = user.recommendation_days ?? [];
 
-    // If days list is empty, treat as "every day"
+    // If days list is empty, treat as every day
     if (days.length > 0 && !days.includes(todayName)) return false;
 
     const freq = user.recommendation_frequency ?? 'weekly';
-
-    // Daily users: eligible at any hour (once-per-day guard is enforced separately)
     if (freq === 'daily') return true;
 
-    const time = user.recommendation_time ?? 'morning';
-    // morning = 14:00 UTC (8am MDT / 7am MST), midday = 18:00 UTC (12pm MDT)
-    const targetHour = time === 'morning' ? 14 : 18;
-
-    // Allow ±1 hour window so cron doesn't need to fire at the exact minute
-    const hourDiff = Math.abs(currentHourUtc - targetHour);
-    if (hourDiff > 1) return false;
-
     const dow = new Date().getUTCDay(); // 0=Sun
-
-    if (freq === '2x_week') return dow === 1 || dow === 4;
-    if (freq === 'weekly') return dow === 1;
+    if (freq === '2x_week') return dow === 1 || dow === 4; // Mon or Thu
+    if (freq === 'weekly') return dow === 1;               // Mon only
 
     return false;
   }
