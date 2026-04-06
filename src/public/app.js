@@ -71,8 +71,8 @@ const state = {
   const params = new URLSearchParams(window.location.search);
   const step = parseInt(params.get('step') ?? '1', 10);
 
-  // Check if already logged in via session cookie
-  if (step === 1) {
+  // If OAuth redirected back with step=2+, check auth and route accordingly
+  if (step > 1) {
     try {
       const res = await fetch('/api/me');
       if (res.ok) {
@@ -81,13 +81,13 @@ const state = {
           window.location.href = '/proposals';
           return;
         }
-        // Logged in but onboarding incomplete — continue from step 2
+        // Logged in but onboarding incomplete — continue from the given step
         wireInteractions();
-        goTo(2);
+        goTo(step);
         return;
       }
     } catch {
-      // Not logged in — show landing page
+      // Not logged in — fall through to landing
     }
   }
 

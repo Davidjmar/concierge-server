@@ -80,7 +80,10 @@
     const past = proposals.filter(p => p.user_response !== 'pending');
 
     const renderCard = p => {
-      const tags = (p.event?.tags ?? []).slice(0, 4).map(t =>
+      // Sequelize serializes belongsTo(Event) as capital-E "Event"
+      const ev = p.Event ?? p.event ?? {};
+
+      const tags = (ev.tags ?? []).slice(0, 4).map(t =>
         `<span class="proposal-tag">${t.replace(/_/g, ' ')}</span>`
       ).join('');
 
@@ -90,16 +93,18 @@
         ? '<span class="badge badge-deleted">Passed</span>'
         : '<span class="badge badge-pending">Upcoming</span>';
 
-      const price = p.event?.price
-        ? p.event.price.min === 0 && p.event.price.max === 0
+      const price = ev.price
+        ? ev.price.min === 0 && ev.price.max === 0
           ? '🆓 Free'
-          : `💰 $${p.event.price.min}–$${p.event.price.max}`
+          : `💰 $${ev.price.min}–$${ev.price.max}`
         : '';
 
-      const address = p.event?.location?.address ?? '';
-      const dateStr = p.event?.datetime?.start
-        ? new Date(p.event.datetime.start).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+      const address = ev.location?.address ?? '';
+      const dateStr = ev.datetime?.start
+        ? new Date(ev.datetime.start).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
         : '';
+
+      const venueLine = ev.venue_name ? ev.venue_name : '';
 
       const passBtn = p.user_response === 'pending'
         ? `<button class="pass-btn" onclick="passProposal(${p.id}, this)">Pass on this</button>`
@@ -108,12 +113,12 @@
       return `
         <div class="proposal-card ${p.user_response}" id="proposal-${p.id}">
           <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:1rem">
-            <span class="proposal-title">${p.event?.title ?? 'Event'}</span>
+            <span class="proposal-title">${ev.title ?? 'Event'}</span>
             ${badge}
           </div>
           <div class="proposal-meta">
             ${dateStr ? `📅 ${dateStr}` : ''}
-            ${address ? ` · 📍 ${address}` : ''}
+            ${venueLine ? ` · 🏠 ${venueLine}` : (address ? ` · 📍 ${address}` : '')}
             ${price ? ` · ${price}` : ''}
           </div>
           ${tags ? `<div class="proposal-tags">${tags}</div>` : ''}
