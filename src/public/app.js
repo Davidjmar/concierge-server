@@ -10,7 +10,7 @@
     'hunting happy hours',
     'filling your Friday',
     'finding your next concert',
-    'on autopilot',
+    'already on it',
   ];
 
   let pi = 0, ci = 0, deleting = false;
