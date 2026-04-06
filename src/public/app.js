@@ -7,10 +7,10 @@
   if (!el) return;
 
   const phrases = [
-    'looking for your next happy hour',
-    'finding your next concert',
-    'browsing events while you live your life',
-    'the fun AI you were promised',
+    'hunting happy hours right now',
+    'filling your Friday before you cancel it',
+    'scanning Denver so you don\'t have to',
+    'your social life on autopilot',
   ];
 
   let pi = 0, ci = 0, deleting = false;
