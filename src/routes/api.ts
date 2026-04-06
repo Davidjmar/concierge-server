@@ -172,9 +172,12 @@ router.post('/debug/run-recommendations', requireDebugSecret, async (req: Reques
  * sees for the authenticated user: windows, candidate events, scores, and
  * any blocking reasons. Does NOT create calendar events or DB records.
  */
-router.get('/debug/explain-recommendations', requireDebugSecret, requireAuth, async (req: Request, res: Response) => {
+router.get('/debug/explain-recommendations', requireDebugSecret, async (req: Request, res: Response) => {
   try {
-    const user = req.user!;
+    const userId = parseInt(req.query.userId as string, 10);
+    if (isNaN(userId)) return res.status(400).json({ error: 'userId query param required' });
+    const user = await User.findByPk(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
     const explanation = await recommendationEngine.explainForUser(user);
     res.json(explanation);
   } catch (error: any) {
