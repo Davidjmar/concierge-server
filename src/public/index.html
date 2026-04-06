@@ -22,20 +22,16 @@
       text-transform: lowercase;
     }
     .hero-typing-line {
-      font-size: clamp(1.6rem, 5vw, 2.6rem);
+      font-size: clamp(1.4rem, 3.5vw, 2.2rem);
       font-weight: 800;
-      line-height: 1.2;
+      line-height: 1.35;
       color: var(--text);
-      white-space: nowrap;
-      display: flex;
-      justify-content: center;
-      align-items: baseline;
-      flex-wrap: nowrap;
-      overflow: hidden;
+      text-align: center;
+      max-width: 36rem;
+      margin: 0 auto;
     }
     .hero-typing-prefix {
       color: var(--muted);
-      flex-shrink: 0;
     }
     .hero-typing-accent {
       color: var(--text);
@@ -43,7 +39,6 @@
     .hero-cursor {
       color: var(--accent);
       animation: blink 1s step-end infinite;
-      flex-shrink: 0;
     }
     @keyframes blink {
       0%, 100% { opacity: 1; }
@@ -68,7 +63,6 @@
     }
     @media (max-width: 600px) {
       .pillars { grid-template-columns: 1fr; }
-      .hero-typing-line { font-size: 1.35rem; }
     }
     .pillar {
       background: var(--surface);
@@ -99,7 +93,7 @@
     <div class="hero">
       <div class="hero-wordmark">kno</div>
       <div class="hero-typing-line">
-        <span class="hero-typing-prefix">kno.is&nbsp;</span><span id="typing-text" class="hero-typing-accent"></span><span class="hero-cursor">|</span>
+        <span class="hero-typing-prefix">kno.is </span><span id="typing-text" class="hero-typing-accent"></span><span class="hero-cursor">|</span>
       </div>
       <p class="hero-sub">Connect your calendar once. Wake up to fun things waiting for you.</p>
     </div>
