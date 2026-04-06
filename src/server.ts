@@ -26,9 +26,12 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.use('/api', apiRoutes);
 app.use('/auth', authRoutes);
 
-// SPA-style fallback: proposals.html is already a static file; serve index for unknown paths
 app.get('/proposals', (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'proposals.html'));
+});
+
+app.get('/settings', (_req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'settings.html'));
 });
 
 // ── Database init ─────────────────────────────────────────────────────────────

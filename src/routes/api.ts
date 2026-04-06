@@ -186,6 +186,43 @@ router.post('/proposals/:id/pass', async (req: Request, res: Response) => {
   }
 });
 
+// ─── Settings — fetch current user data ──────────────────────────────────────
+
+router.get('/users/settings', async (req: Request, res: Response) => {
+  try {
+    const userId = parseInt(req.query.userId as string, 10);
+    if (isNaN(userId)) return res.status(400).json({ error: 'Invalid userId' });
+
+    const user = await User.findByPk(userId, {
+      attributes: [
+        'id', 'email', 'name',
+        'home_location', 'work_location',
+        'preferences',
+        'recommendation_frequency', 'recommendation_days',
+        'recommendation_time', 'max_proposals_per_run',
+      ],
+    });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    res.json({
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      home_location: user.home_location,
+      work_location: user.work_location,
+      preferences: user.preferences,
+      schedule: {
+        frequency: user.recommendation_frequency,
+        days: user.recommendation_days,
+        time: user.recommendation_time,
+        max_proposals: user.max_proposals_per_run,
+      },
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message ?? 'Unknown error' });
+  }
+});
+
 // ─── Debug: trigger recommendation run immediately ────────────────────────────
 
 router.post('/debug/run-recommendations', async (req: Request, res: Response) => {

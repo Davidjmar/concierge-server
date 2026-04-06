@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>kno — settings</title>
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    .settings-section { margin-bottom: 2rem; }
+    .settings-section-header {
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 0.75rem;
+    }
+    .save-row {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      margin-top: 1.25rem;
+    }
+    .save-row .btn-primary { width: auto; padding: 0.6rem 1.5rem; }
+    .save-status {
+      font-size: 0.85rem;
+      color: var(--muted);
+      transition: opacity 0.3s;
+    }
+    .save-status.success { color: #52b788; }
+    .save-status.error { color: var(--accent); }
+  </style>
+</head>
+<body>
+
+<nav class="nav">
+  <a href="/" class="nav-logo">kno</a>
+  <div class="nav-links">
+    <a href="/proposals">My proposals</a>
+    <a href="/settings" style="color:var(--text)">Settings</a>
+    <a href="/auth/logout">Sign out</a>
+  </div>
+</nav>
+
+<div class="container" style="margin-top:1.5rem">
+
+  <div id="loading" style="text-align:center;padding:3rem;color:var(--muted)">Loading…</div>
+
+  <div id="settings-body" style="display:none">
+
+    <h1 style="font-size:1.5rem;font-weight:800;margin-bottom:0.25rem">Settings</h1>
+    <p class="text-muted text-sm" style="margin-bottom:2rem">Update your preferences any time. Changes take effect on the next recommendation run.</p>
+
+    <!-- ── Location ── -->
+    <div class="settings-section">
+      <p class="settings-section-header">Location</p>
+      <div class="card">
+        <label for="home-address">Home address or neighborhood</label>
+        <input type="text" id="home-address" placeholder="e.g. Highlands, Denver CO" />
+
+        <label for="work-address">Work address or neighborhood <span style="color:var(--muted);font-weight:400">(optional)</span></label>
+        <input type="text" id="work-address" placeholder="e.g. LoDo, Denver CO" />
+
+        <div class="save-row">
+          <button class="btn btn-primary" onclick="saveLocation()">Save</button>
+          <span class="save-status" id="status-location"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Tastes ── -->
+    <div class="settings-section">
+      <p class="settings-section-header">Tastes</p>
+
+      <div class="card">
+        <p class="section-title" style="font-size:1rem">Drinks</p>
+        <div class="chip-grid" id="chips-drink">
+          <span class="chip" data-val="craft_beer">🍺 Craft beer</span>
+          <span class="chip" data-val="cocktails">🍸 Cocktails</span>
+          <span class="chip" data-val="wine">🍷 Wine</span>
+          <span class="chip" data-val="non_alcoholic">🥤 Non-alcoholic</span>
+        </div>
+
+        <p class="section-title" style="font-size:1rem">Food</p>
+        <div class="chip-grid" id="chips-food">
+          <span class="chip" data-val="pizza">🍕 Pizza</span>
+          <span class="chip" data-val="tacos">🌮 Tacos</span>
+          <span class="chip" data-val="sushi">🍣 Sushi</span>
+          <span class="chip" data-val="burgers">🍔 Burgers</span>
+          <span class="chip" data-val="bbq">🥩 BBQ</span>
+          <span class="chip" data-val="italian">🍝 Italian</span>
+        </div>
+
+        <p class="section-title" style="font-size:1rem">Dietary</p>
+        <div class="chip-grid" id="chips-dietary">
+          <span class="chip" data-val="vegetarian">🥗 Vegetarian</span>
+          <span class="chip" data-val="vegan">🌱 Vegan</span>
+          <span class="chip" data-val="gluten_free">✳️ Gluten-free</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <p class="section-title" style="font-size:1rem">Vibe</p>
+        <div class="chip-grid" id="chips-vibe">
+          <span class="chip" data-val="chill">😌 Chill</span>
+          <span class="chip" data-val="lively">🎉 Lively</span>
+          <span class="chip" data-val="social">👥 Social</span>
+          <span class="chip" data-val="date_night">💑 Date night</span>
+          <span class="chip" data-val="solo_friendly">🙋 Solo-friendly</span>
+        </div>
+
+        <p class="section-title" style="font-size:1rem">Activity level</p>
+        <div class="toggle-row" id="toggle-activity">
+          <button class="toggle-btn" data-val="low">Low-key</button>
+          <button class="toggle-btn" data-val="medium">Moderate</button>
+          <button class="toggle-btn" data-val="high">Active</button>
+        </div>
+
+        <p class="section-title" style="font-size:1rem">Setting</p>
+        <div class="toggle-row" id="toggle-setting">
+          <button class="toggle-btn" data-val="indoor">Indoors</button>
+          <button class="toggle-btn" data-val="outdoor">Outdoors</button>
+          <button class="toggle-btn" data-val="no_preference">No preference</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <p class="section-title" style="font-size:1rem">Events you enjoy</p>
+        <div class="chip-grid" id="chips-events">
+          <span class="chip" data-val="happy_hour">🍻 Happy hour</span>
+          <span class="chip" data-val="concert">🎵 Concerts</span>
+          <span class="chip" data-val="trivia">🧠 Trivia</span>
+          <span class="chip" data-val="comedy">😂 Comedy</span>
+          <span class="chip" data-val="art">🎨 Art / galleries</span>
+          <span class="chip" data-val="market">🛍️ Markets</span>
+          <span class="chip" data-val="festival">🎪 Festivals</span>
+          <span class="chip" data-val="outdoor">🥾 Outdoor</span>
+          <span class="chip" data-val="film">🎬 Film</span>
+          <span class="chip" data-val="class">✏️ Classes</span>
+        </div>
+
+        <p class="section-title" style="font-size:1rem">Budget</p>
+        <div class="budget-options" id="budget-opts">
+          <div class="budget-opt" data-val="free"><span class="icon">🆓</span>Free</div>
+          <div class="budget-opt" data-val="budget"><span class="icon">💵</span>Budget<br><small>Under $15</small></div>
+          <div class="budget-opt" data-val="moderate"><span class="icon">💳</span>Moderate<br><small>$15–$50</small></div>
+          <div class="budget-opt" data-val="splurge"><span class="icon">✨</span>Splurge<br><small>$50+</small></div>
+        </div>
+
+        <p class="section-title" style="font-size:1rem">Max distance from home</p>
+        <div class="toggle-row" id="toggle-distance">
+          <button class="toggle-btn" data-val="2">2 mi</button>
+          <button class="toggle-btn" data-val="5">5 mi</button>
+          <button class="toggle-btn" data-val="10">10 mi</button>
+          <button class="toggle-btn" data-val="20">20 mi</button>
+        </div>
+
+        <div class="save-row">
+          <button class="btn btn-primary" onclick="saveTastes()">Save</button>
+          <span class="save-status" id="status-tastes"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Schedule ── -->
+    <div class="settings-section">
+      <p class="settings-section-header">Schedule</p>
+      <div class="card">
+        <p class="section-title" style="font-size:1rem">How often should kno suggest things?</p>
+        <div class="toggle-row" id="toggle-frequency">
+          <button class="toggle-btn" data-val="daily">Daily</button>
+          <button class="toggle-btn" data-val="2x_week">2× a week</button>
+          <button class="toggle-btn" data-val="weekly">Weekly</button>
+        </div>
+
+        <p class="section-title" style="font-size:1rem">Which days are you usually open?</p>
+        <div class="chip-grid" id="chips-days">
+          <span class="chip" data-val="monday">Mon</span>
+          <span class="chip" data-val="tuesday">Tue</span>
+          <span class="chip" data-val="wednesday">Wed</span>
+          <span class="chip" data-val="thursday">Thu</span>
+          <span class="chip" data-val="friday">Fri</span>
+          <span class="chip" data-val="saturday">Sat</span>
+          <span class="chip" data-val="sunday">Sun</span>
+        </div>
+
+        <p class="section-title" style="font-size:1rem">Proposals per week</p>
+        <div class="toggle-row" id="toggle-proposals">
+          <button class="toggle-btn" data-val="1">1</button>
+          <button class="toggle-btn" data-val="2">2</button>
+          <button class="toggle-btn" data-val="3">3</button>
+          <button class="toggle-btn" data-val="5">5</button>
+          <button class="toggle-btn" data-val="7">7</button>
+        </div>
+
+        <div class="save-row">
+          <button class="btn btn-primary" onclick="saveSchedule()">Save</button>
+          <span class="save-status" id="status-schedule"></span>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /settings-body -->
+</div>
+
+<script>
+let userId = null;
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+
+(async () => {
+  const params = new URLSearchParams(window.location.search);
+  const uidParam = params.get('uid');
+  if (uidParam) localStorage.setItem('kno_user_id', uidParam);
+  userId = parseInt(uidParam || localStorage.getItem('kno_user_id') || '', 10);
+
+  if (!userId || isNaN(userId)) {
+    window.location.href = '/';
+    return;
+  }
+
+  try {
+    const res = await fetch(`/api/users/settings?userId=${userId}`);
+    if (!res.ok) throw new Error();
+    const data = await res.json();
+    populate(data);
+    document.getElementById('loading').style.display = 'none';
+    document.getElementById('settings-body').style.display = 'block';
+  } catch {
+    document.getElementById('loading').textContent = 'Failed to load settings.';
+  }
+})();
+
+// ── Populate saved values ─────────────────────────────────────────────────────
+
+function populate(data) {
+  // Location
+  const home = data.home_location?.address ?? '';
+  const work = data.work_location?.address ?? '';
+  document.getElementById('home-address').value = home;
+  document.getElementById('work-address').value = work;
+
+  const prefs = data.preferences ?? {};
+
+  // Chip grids — mark saved values as selected
+  selectChips('chips-drink', prefs.drink ?? []);
+  selectChips('chips-food', prefs.food ?? []);
+  selectChips('chips-dietary', prefs.dietary ?? []);
+  selectChips('chips-vibe', prefs.vibe ?? []);
+  selectChips('chips-events', prefs.event_types ?? []);
+
+  // Toggle buttons (single-select)
+  selectToggle('toggle-activity', prefs.activity_level ?? 'medium');
+  selectToggle('toggle-setting', prefs.indoor_outdoor ?? 'no_preference');
+  selectToggle('toggle-frequency', data.schedule?.frequency ?? '2x_week');
+  selectToggle('toggle-proposals', String(data.schedule?.max_proposals ?? 2));
+  selectToggle('toggle-distance', String(prefs.max_distance_miles ?? 5));
+
+  // Budget
+  document.querySelectorAll('#budget-opts .budget-opt').forEach(opt => {
+    opt.classList.toggle('selected', opt.dataset.val === (prefs.budget ?? 'moderate'));
+  });
+
+  // Days chips
+  selectChips('chips-days', data.schedule?.days ?? []);
+
+  // Wire up interactivity now that values are set
+  wireChips();
+  wireToggles();
+  wireBudget();
+}
+
+function selectChips(containerId, values) {
+  document.querySelectorAll(`#${containerId} .chip`).forEach(chip => {
+    chip.classList.toggle('selected', values.includes(chip.dataset.val));
+  });
+}
+
+function selectToggle(containerId, value) {
+  document.querySelectorAll(`#${containerId} .toggle-btn`).forEach(btn => {
+    btn.classList.toggle('selected', btn.dataset.val === value);
+  });
+}
+
+// ── Wire interactivity ────────────────────────────────────────────────────────
+
+function wireChips() {
+  document.querySelectorAll('.chip').forEach(chip => {
+    chip.addEventListener('click', () => chip.classList.toggle('selected'));
+  });
+}
+
+function wireToggles() {
+  ['toggle-activity', 'toggle-setting', 'toggle-frequency', 'toggle-proposals', 'toggle-distance'].forEach(id => {
+    const container = document.getElementById(id);
+    if (!container) return;
+    container.querySelectorAll('.toggle-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        container.querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('selected'));
+        btn.classList.add('selected');
+      });
+    });
+  });
+}
+
+function wireBudget() {
+  document.querySelectorAll('#budget-opts .budget-opt').forEach(opt => {
+    opt.addEventListener('click', () => {
+      document.querySelectorAll('#budget-opts .budget-opt').forEach(o => o.classList.remove('selected'));
+      opt.classList.add('selected');
+    });
+  });
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function chipsSelected(containerId) {
+  return [...document.querySelectorAll(`#${containerId} .chip.selected`)].map(c => c.dataset.val);
+}
+
+function toggleSelected(containerId) {
+  return document.querySelector(`#${containerId} .toggle-btn.selected`)?.dataset.val ?? null;
+}
+
+function showStatus(id, type, msg) {
+  const el = document.getElementById(id);
+  el.textContent = msg;
+  el.className = `save-status ${type}`;
+  if (type === 'success') setTimeout(() => { el.textContent = ''; el.className = 'save-status'; }, 3000);
+}
+
+// ── Save handlers ─────────────────────────────────────────────────────────────
+
+async function saveLocation() {
+  const home = document.getElementById('home-address').value.trim();
+  if (!home) { showStatus('status-location', 'error', 'Home address is required'); return; }
+
+  try {
+    const res = await fetch('/api/users/onboarding/locations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, home, work: document.getElementById('work-address').value.trim() }),
+    });
+    if (!res.ok) throw new Error();
+    showStatus('status-location', 'success', 'Saved');
+  } catch {
+    showStatus('status-location', 'error', 'Failed to save');
+  }
+}
+
+async function saveTastes() {
+  const prefs = {
+    drink: chipsSelected('chips-drink'),
+    food: chipsSelected('chips-food'),
+    dietary: chipsSelected('chips-dietary'),
+    event_types: chipsSelected('chips-events'),
+    vibe: chipsSelected('chips-vibe'),
+    activity_level: toggleSelected('toggle-activity') ?? 'medium',
+    indoor_outdoor: toggleSelected('toggle-setting') ?? 'no_preference',
+    budget: document.querySelector('#budget-opts .budget-opt.selected')?.dataset.val ?? 'moderate',
+    max_distance_miles: parseInt(toggleSelected('toggle-distance') ?? '5', 10),
+  };
+
+  try {
+    const res = await fetch('/api/users/onboarding/preferences', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, preferences: prefs }),
+    });
+    if (!res.ok) throw new Error();
+    showStatus('status-tastes', 'success', 'Saved');
+  } catch {
+    showStatus('status-tastes', 'error', 'Failed to save');
+  }
+}
+
+async function saveSchedule() {
+  const days = chipsSelected('chips-days');
+  if (days.length === 0) { showStatus('status-schedule', 'error', 'Pick at least one day'); return; }
+
+  const schedule = {
+    frequency: toggleSelected('toggle-frequency') ?? '2x_week',
+    days,
+    max_proposals: parseInt(toggleSelected('toggle-proposals') ?? '2', 10),
+  };
+
+  try {
+    const res = await fetch('/api/users/onboarding/schedule', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, ...schedule }),
+    });
+    if (!res.ok) throw new Error();
+    showStatus('status-schedule', 'success', 'Saved');
+  } catch {
+    showStatus('status-schedule', 'error', 'Failed to save');
+  }
+}
+</script>
+</body>
+</html>
