@@ -179,16 +179,21 @@ class RecommendationEngine {
     // 3. Create calendar proposals & record
     for (const { event, score } of proposals) {
       const gcalId = await calendarService.createProposal(user, event);
+      if (!gcalId) {
+        // Calendar creation failed — do NOT record in DB so the engine retries next hour
+        console.error(`User ${user.id}: createProposal returned null for "${event.title}" — skipping DB write so we can retry`);
+        continue;
+      }
       await UserEventRecommendation.create({
         user_id: user.id,
         event_id: event.id,
         sent_at: new Date(),
         proposed_at: new Date(),
-        google_calendar_event_id: gcalId ?? undefined,
+        google_calendar_event_id: gcalId,
         user_response: 'pending',
         proposal_score: score,
       });
-      console.log(`User ${user.id}: proposed "${event.title}" (score ${score.toFixed(2)}, gcal: ${gcalId ?? 'none'})`);
+      console.log(`User ${user.id}: proposed "${event.title}" (score ${score.toFixed(2)}, gcal: ${gcalId})`);
     }
   }
 
@@ -411,6 +416,72 @@ class RecommendationEngine {
     }
 
     return results;
+  }
+
+  // ─── Diagnostics ─────────────────────────────────────────────────────────────
+
+  /**
+   * Dry-run the full pipeline for a user and return a JSON breakdown of
+   * what happened at each step. No DB writes, no calendar events created.
+   */
+  async explainForUser(user: User): Promise<Record<string, any>> {
+    const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+    const now = new Date();
+    const todayName = dayNames[now.getUTCDay()];
+
+    const scheduleMatch = this.userMatchesSchedule(user, todayName);
+    const alreadyRan = await this.userAlreadyRanToday(user.id);
+    const alreadySentThisWeek = await this.proposalsThisWeek(user.id);
+    const weeklyLimit = user.max_proposals_per_run ?? 3;
+
+    if (!user.google_access_token) {
+      return { blocked: 'no_google_token', user_id: user.id };
+    }
+
+    const busyWindows = await calendarService.getBusyWindows(user);
+    const openWindows = calendarService.getOpenWindows(busyWindows, user);
+
+    const windowDetails = await Promise.all(
+      openWindows.slice(0, 5).map(async w => {
+        const candidates = await this.getCandidatesForWindow(user, w, []);
+        return {
+          window_start: w.start,
+          window_end: w.end,
+          is_weekend: w.isWeekend,
+          candidates_found: candidates.length,
+          top_candidates: candidates.slice(0, 3).map(c => ({
+            id: c.event.id,
+            title: c.event.title,
+            type: c.event.type,
+            score: parseFloat(c.score.toFixed(3)),
+            event_start: (c.event.datetime as any)?.start,
+          })),
+        };
+      })
+    );
+
+    return {
+      user_id: user.id,
+      now_utc: now.toISOString(),
+      today_name: todayName,
+      schedule_match: scheduleMatch,
+      already_ran_today: alreadyRan,
+      proposals_this_week: alreadySentThisWeek,
+      weekly_limit: weeklyLimit,
+      remaining_this_week: weeklyLimit - alreadySentThisWeek,
+      busy_windows_count: busyWindows.length,
+      open_windows_count: openWindows.length,
+      recommendation_days: user.recommendation_days,
+      recommendation_frequency: user.recommendation_frequency,
+      home_location: user.home_location,
+      work_location: user.work_location,
+      preferences_summary: {
+        event_types: (user.preferences as any)?.event_types,
+        max_distance_miles: (user.preferences as any)?.max_distance_miles,
+        budget: (user.preferences as any)?.budget,
+      },
+      windows: windowDetails,
+    };
   }
 
   // ─── Legacy: generate and send via email (kept for backward compat) ────────

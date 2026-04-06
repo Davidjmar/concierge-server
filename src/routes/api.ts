@@ -167,4 +167,19 @@ router.post('/debug/run-recommendations', requireDebugSecret, async (req: Reques
   }
 });
 
+/**
+ * Diagnostic endpoint — returns a JSON breakdown of exactly what the engine
+ * sees for the authenticated user: windows, candidate events, scores, and
+ * any blocking reasons. Does NOT create calendar events or DB records.
+ */
+router.get('/debug/explain-recommendations', requireDebugSecret, requireAuth, async (req: Request, res: Response) => {
+  try {
+    const user = req.user!;
+    const explanation = await recommendationEngine.explainForUser(user);
+    res.json(explanation);
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message ?? 'Unknown error' });
+  }
+});
+
 export default router;
