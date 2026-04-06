@@ -7,6 +7,8 @@ export type EventSource =
   | 'westword'
   | 'google_sheets'
   | 'denver_gov'
+  | 'city_park_jazz'
+  | 'botanic_gardens'
   | 'manual'
   | 'reddit'
   | 'local_blog';

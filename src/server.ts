@@ -90,6 +90,16 @@ cron.schedule('0 3 * * 1', async () => {
     });
     await upsertRawEvents(ebEvents, 'Eventbrite');
 
+    // City Park Jazz
+    console.log('=== City Park Jazz ===');
+    const jazzEvents = await scraper.scrapeCityParkJazz();
+    await upsertRawEvents(jazzEvents, 'CityParkJazz');
+
+    // Denver Botanic Gardens
+    console.log('=== Botanic Gardens ===');
+    const botanicEvents = await scraper.scrapeBotanicGardens();
+    await upsertRawEvents(botanicEvents, 'BotanicGardens');
+
   } catch (err) {
     console.error('[Cron] Monday scrape error:', err);
   }
@@ -164,6 +174,26 @@ app.post('/api/debug/scrape-sheets', requireDebugSecret, async (_req, res) => {
 });
 
 // Runs all sources sequentially — long-running (~5-10 min), check server logs
+app.post('/api/debug/scrape-city-park-jazz', requireDebugSecret, async (_req, res) => {
+  res.json({ ok: true, message: 'City Park Jazz scrape started — check server logs' });
+  try {
+    const scraper = new Scraper();
+    const events = await scraper.scrapeCityParkJazz();
+    await upsertRawEvents(events, 'CityParkJazz');
+    console.log(`[Debug] City Park Jazz: upserted ${events.length} events`);
+  } catch (err) { console.error('[Debug] City Park Jazz error:', err); }
+});
+
+app.post('/api/debug/scrape-botanic-gardens', requireDebugSecret, async (_req, res) => {
+  res.json({ ok: true, message: 'Botanic Gardens scrape started — check server logs' });
+  try {
+    const scraper = new Scraper();
+    const events = await scraper.scrapeBotanicGardens();
+    await upsertRawEvents(events, 'BotanicGardens');
+    console.log(`[Debug] Botanic Gardens: upserted ${events.length} events`);
+  } catch (err) { console.error('[Debug] Botanic Gardens error:', err); }
+});
+
 app.post('/api/debug/scrape-all', requireDebugSecret, async (_req, res) => {
   // Respond immediately so the HTTP connection doesn't time out
   res.json({ ok: true, message: 'Scrape started — check server logs for progress' });
@@ -208,6 +238,20 @@ app.post('/api/debug/scrape-all', requireDebugSecret, async (_req, res) => {
     await upsertEvents(sheets, 'GoogleSheets');
     results.sheets = sheets.length;
   } catch (err) { console.error('[ScrapeAll] Google Sheets error:', err); }
+
+  try {
+    console.log('[ScrapeAll] City Park Jazz…');
+    const jazz = await scraper.scrapeCityParkJazz();
+    await upsertRawEvents(jazz, 'CityParkJazz');
+    results.city_park_jazz = jazz.length;
+  } catch (err) { console.error('[ScrapeAll] City Park Jazz error:', err); }
+
+  try {
+    console.log('[ScrapeAll] Botanic Gardens…');
+    const botanic = await scraper.scrapeBotanicGardens();
+    await upsertRawEvents(botanic, 'BotanicGardens');
+    results.botanic_gardens = botanic.length;
+  } catch (err) { console.error('[ScrapeAll] Botanic Gardens error:', err); }
 
   console.log('[ScrapeAll] Done.', results);
 });

@@ -781,6 +781,271 @@ export class Scraper {
     }
   }
 
+  // ─── City Park Jazz ──────────────────────────────────────────────────────────
+
+  /**
+   * Scrapes the City Park Jazz 2026 concert calendar.
+   * 10 free outdoor Sunday concerts, June–August, at City Park Pavilion.
+   * Page is SquareSpace — event items use .eventlist-event article elements.
+   */
+  async scrapeCityParkJazz(): Promise<RawEvent[]> {
+    const results: RawEvent[] = [];
+    const PAGE_URL = 'https://www.cityparkjazz.org/2026-concert-calendar';
+    const VENUE_ADDRESS = '2001 Steele St, Denver, CO 80205';
+
+    try {
+      const resp = await axios.get(PAGE_URL, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        },
+        timeout: 15000,
+      });
+
+      const $ = cheerio.load(resp.data);
+      const coords = await geocodingService.getCoordinates(VENUE_ADDRESS) ?? [-104.9503, 39.7497] as [number, number];
+
+      // SquareSpace renders event list items as <article class="eventlist-event ...">
+      $('article.eventlist-event, li.eventlist-event').each((_, el) => {
+        try {
+          const title = $(el).find('.eventlist-title').text().trim()
+            || $(el).find('h1, h2, h3').first().text().trim();
+          if (!title) return;
+
+          // SquareSpace date: <time class="event-date" datetime="2026-06-07">
+          const dateAttr = $(el).find('time[datetime]').first().attr('datetime') ?? '';
+          if (!dateAttr) return;
+
+          // SquareSpace time string: "6:00 PM – 8:00 PM"
+          const timeText = $(el).find('.event-time-12hr').text().trim() || '6:00 PM – 8:00 PM';
+          const timeMatch = timeText.match(/(\d{1,2}:\d{2}\s*[AP]M)\s*[–\-]\s*(\d{1,2}:\d{2}\s*[AP]M)/i);
+          const startTime = timeMatch ? this.parseTime12(timeMatch[1]) : { h: 18, m: 0 };
+          const endTime   = timeMatch ? this.parseTime12(timeMatch[2]) : { h: 20, m: 0 };
+
+          // Build UTC datetimes from Denver local (MDT = UTC-6, add 6h)
+          const [year, month, day] = dateAttr.split('-').map(Number);
+          const startLocal = new Date(Date.UTC(year, month - 1, day, startTime.h, startTime.m));
+          const endLocal   = new Date(Date.UTC(year, month - 1, day, endTime.h,   endTime.m));
+          const start = new Date(startLocal.getTime() + 6 * 3600 * 1000);
+          const end   = new Date(endLocal.getTime()   + 6 * 3600 * 1000);
+
+          if (end < new Date()) return; // skip past concerts
+
+          const description = $(el).find('.eventlist-description p').first().text().trim()
+            || 'Free outdoor jazz concert at Denver\'s City Park Pavilion.';
+
+          results.push({
+            title: `City Park Jazz: ${title}`,
+            description,
+            sourceUrl: PAGE_URL,
+            source: 'city_park_jazz' as EventSource,
+            type: 'concert',
+            price: { min: 0, max: 0 },
+            location: { type: 'Point', coordinates: coords as [number, number], address: VENUE_ADDRESS },
+            datetime: { start, end },
+            recurring: false,
+            city: 'denver',
+            tags: ['concert', 'jazz', 'outdoor', 'free', 'social', 'park'],
+          });
+        } catch (err) {
+          console.error('City Park Jazz: error parsing event item:', err);
+        }
+      });
+
+      console.log(`City Park Jazz: scraped ${results.length} concerts`);
+    } catch (err) {
+      console.error('City Park Jazz: scrape error:', err);
+    }
+
+    return results;
+  }
+
+  // ─── Denver Botanic Gardens ───────────────────────────────────────────────────
+
+  /**
+   * Scrapes the Denver Botanic Gardens public calendar.
+   * Drupal Views-rendered page at /calendar — fetches pages 0–1 (~20–30 events).
+   * Skips remote venues (Chatfield Farms, Plains Conservation Center, ONLINE).
+   */
+  async scrapeBotanicGardens(): Promise<RawEvent[]> {
+    const results: RawEvent[] = [];
+    const BASE_URL = 'https://www.botanicgardens.org';
+
+    // Venues to skip — too far from Denver or virtual
+    const SKIP_VENUES = ['chatfield', 'plains conservation', 'online'];
+    // Known DBG locations with coords
+    const VENUE_COORDS: Record<string, { address: string; coords: [number, number] }> = {
+      'york street': { address: '1007 York St, Denver, CO 80206', coords: [-104.9507, 39.7284] },
+    };
+
+    let coordsCache: Record<string, [number, number]> = {};
+
+    for (let page = 0; page <= 1; page++) {
+      try {
+        const resp = await axios.get(`${BASE_URL}/calendar`, {
+          params: { page },
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          },
+          timeout: 15000,
+        });
+
+        const $ = cheerio.load(resp.data);
+
+        // Drupal Views rows — try common class patterns
+        const rows = $('.views-row').length > 0 ? $('.views-row') : $('article');
+
+        for (let i = 0; i < rows.length; i++) {
+          const el = rows[i];
+          try {
+            // Title and URL
+            const titleEl = $(el).find('h3 a, .views-field-title a, h2 a').first();
+            const title = titleEl.text().trim();
+            const relUrl = titleEl.attr('href') ?? '';
+            if (!title || !relUrl) continue;
+
+            // Location — check before geocoding so we can skip early
+            const locationText = (
+              $(el).find('.views-field-field-location .field-content').text()
+              || $(el).find('.location').text()
+              || 'York Street'
+            ).trim();
+
+            const locationLower = locationText.toLowerCase();
+            if (SKIP_VENUES.some(v => locationLower.includes(v))) continue;
+
+            // Date text — Drupal renders like "Tue, Apr 7, 7:30-8:30 a.m."
+            const dateText = (
+              $(el).find('.views-field-field-date .field-content').text()
+              || $(el).find('.date-display-single').text()
+              || $(el).find('time').text()
+            ).trim();
+
+            const datetime = this.parseBotanicDateText(dateText);
+            if (!datetime) continue;
+            if (datetime.end < new Date()) continue; // skip past events
+
+            // Resolve coordinates
+            let coords: [number, number];
+            const knownVenue = Object.entries(VENUE_COORDS).find(([k]) => locationLower.includes(k));
+            if (knownVenue) {
+              coords = knownVenue[1].coords;
+            } else if (coordsCache[locationText]) {
+              coords = coordsCache[locationText];
+            } else {
+              const geocoded = await geocodingService.getCoordinates(`${locationText}, Denver, CO`);
+              coords = (geocoded as [number, number] | null) ?? [-104.9507, 39.7284];
+              coordsCache[locationText] = coords;
+              await new Promise(r => setTimeout(r, 300));
+            }
+
+            const address = knownVenue
+              ? knownVenue[1].address
+              : `${locationText}, Denver, CO`;
+
+            const sourceUrl = relUrl.startsWith('http') ? relUrl : `${BASE_URL}${relUrl}`;
+
+            // Infer event type from title
+            const titleLower = title.toLowerCase();
+            let type: EventType = 'social';
+            if (/yoga|meditation|pilates|fitness|tai chi/i.test(titleLower)) type = 'class';
+            else if (/concert|music|jazz|symphony/i.test(titleLower)) type = 'concert';
+            else if (/market|sale|shop/i.test(titleLower)) type = 'market';
+            else if (/art|illustration|drawing|painting|sketch/i.test(titleLower)) type = 'art';
+            else if (/tour|walk|stroll|hike/i.test(titleLower)) type = 'park';
+
+            const tags: string[] = ['botanic_gardens', 'outdoor'];
+            if (type === 'class') tags.push('class', 'wellness');
+            else if (type === 'concert') tags.push('concert', 'music');
+            else if (type === 'art') tags.push('art');
+            else tags.push('social');
+
+            results.push({
+              title,
+              description: `At Denver Botanic Gardens — ${locationText}.`,
+              sourceUrl,
+              source: 'botanic_gardens' as EventSource,
+              type,
+              // DBG general admission ~$15; member events may be free — default to paid range
+              price: { min: 0, max: 20 },
+              location: { type: 'Point', coordinates: coords, address },
+              datetime,
+              recurring: false,
+              city: 'denver',
+              tags,
+            });
+          } catch (err) {
+            console.error('Botanic Gardens: error parsing row:', err);
+          }
+        }
+
+        console.log(`Botanic Gardens page ${page}: parsed ${results.length} events so far`);
+        await new Promise(r => setTimeout(r, 800)); // polite delay between pages
+      } catch (err) {
+        console.error(`Botanic Gardens: error fetching page ${page}:`, err);
+      }
+    }
+
+    console.log(`Botanic Gardens: total ${results.length} events`);
+    return results;
+  }
+
+  /**
+   * Parses a Drupal date text like "Tue, Apr 7, 7:30-8:30 a.m." into start/end Dates.
+   * Assumes current calendar year. Converts Denver local time (MDT = UTC-6) to UTC.
+   */
+  private parseBotanicDateText(dateText: string): { start: Date; end: Date } | null {
+    if (!dateText) return null;
+
+    // Normalize: remove dots from a.m./p.m.
+    const normalized = dateText.replace(/\./g, '').toLowerCase();
+
+    // Match: "tue, apr 7, 7:30-8:30 am" or "apr 7, 7:30 - 8:30 pm" etc.
+    const m = normalized.match(
+      /(\w+)\s+(\d{1,2}),?\s+(\d{1,2}:\d{2})\s*[-–]\s*(\d{1,2}:\d{2})\s*(am|pm)/
+    );
+    if (!m) return null;
+
+    const MONTHS: Record<string, number> = {
+      jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+      jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
+    };
+    const monthNum = MONTHS[m[1].slice(0, 3)];
+    if (monthNum === undefined) return null;
+
+    const dayNum = parseInt(m[2]);
+    const [startH, startM] = m[3].split(':').map(Number);
+    const [endH, endM] = m[4].split(':').map(Number);
+    const isPM = m[5] === 'pm';
+
+    // The am/pm suffix applies to the end time; assume start is same period
+    let sh = startH, eh = endH;
+    if (isPM && eh < 12) eh += 12;
+    if (isPM && sh < 12 && !(sh === 12)) sh += 12;
+
+    const year = new Date().getFullYear();
+    // Build as UTC (server is UTC), treating values as Denver local, then add 6h for MDT offset
+    const startLocal = new Date(Date.UTC(year, monthNum, dayNum, sh, startM, 0));
+    const endLocal   = new Date(Date.UTC(year, monthNum, dayNum, eh, endM, 0));
+    const start = new Date(startLocal.getTime() + 6 * 3600 * 1000);
+    const end   = new Date(endLocal.getTime()   + 6 * 3600 * 1000);
+
+    return { start, end };
+  }
+
+  /** Parses a 12-hour time string like "6:00 PM" into { h, m } in 24h. */
+  private parseTime12(timeStr: string): { h: number; m: number } {
+    const m = timeStr.replace(/\s+/g, '').match(/(\d{1,2}):(\d{2})(AM|PM)/i);
+    if (!m) return { h: 18, m: 0 };
+    let h = parseInt(m[1]);
+    const min = parseInt(m[2]);
+    const isPM = m[3].toUpperCase() === 'PM';
+    if (isPM && h < 12) h += 12;
+    if (!isPM && h === 12) h = 0;
+    return { h, m: min };
+  }
+
   // ─── Helpers ──────────────────────────────────────────────────────────────────
 
   private parsePriceRangeFromSpecials(specials: string): { min: number; max: number } {
