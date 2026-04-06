@@ -116,6 +116,7 @@ cron.schedule('0 5 * * *', async () => {
 });
 
 // ── Debug: trigger scrapes on-demand ─────────────────────────────────────────
+
 app.post('/api/debug/scrape-westword', async (_req, res) => {
   try {
     const scraper = new Scraper();
@@ -125,6 +126,120 @@ app.post('/api/debug/scrape-westword', async (_req, res) => {
   } catch (err: any) {
     res.status(500).json({ error: err?.message ?? 'Unknown error' });
   }
+});
+
+app.post('/api/debug/scrape-goldenbuzz', async (_req, res) => {
+  try {
+    const scraper = new Scraper();
+    const all: Partial<Event>[] = [];
+    for (const neighborhood of DENVER.goldenBuzzNeighborhoods) {
+      const events = await scraper.scrapeGoldenBuzz(neighborhood);
+      all.push(...events);
+      await delay(1500);
+    }
+    await upsertEvents(all, 'GoldenBuzz');
+    res.json({ ok: true, count: all.length });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message ?? 'Unknown error' });
+  }
+});
+
+app.post('/api/debug/scrape-eventbrite', async (_req, res) => {
+  try {
+    const scraper = new Scraper();
+    const events = await scraper.scrapeEventbrite({
+      type: 'Point',
+      coordinates: [DENVER.center.lng, DENVER.center.lat],
+    });
+    await upsertRawEvents(events, 'Eventbrite');
+    res.json({ ok: true, count: events.length });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message ?? 'Unknown error' });
+  }
+});
+
+app.post('/api/debug/scrape-yelp', async (_req, res) => {
+  try {
+    const scraper = new Scraper();
+    const events = await scraper.scrapeYelp(
+      { type: 'Point', coordinates: [DENVER.center.lng, DENVER.center.lat] },
+      ['bars', 'restaurants', 'pubs', 'cocktailbars']
+    );
+    await upsertRawEvents(events, 'Yelp');
+    res.json({ ok: true, count: events.length });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message ?? 'Unknown error' });
+  }
+});
+
+app.post('/api/debug/scrape-sheets', async (_req, res) => {
+  try {
+    const scraper = new Scraper();
+    const events = await scraper.scrapeGoogleSpreadsheet();
+    await upsertEvents(events, 'GoogleSheets');
+    res.json({ ok: true, count: events.length });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message ?? 'Unknown error' });
+  }
+});
+
+// Runs all sources sequentially — long-running (~5-10 min), check server logs
+app.post('/api/debug/scrape-all', async (_req, res) => {
+  // Respond immediately so the HTTP connection doesn't time out
+  res.json({ ok: true, message: 'Scrape started — check server logs for progress' });
+
+  const scraper = new Scraper();
+  const results: Record<string, number> = {};
+
+  console.log('[ScrapeAll] Starting full scrape run…');
+
+  try {
+    console.log('[ScrapeAll] Westword…');
+    const ww = await scraper.scrapeWestword();
+    await upsertRawEvents(ww, 'Westword');
+    results.westword = ww.length;
+  } catch (err) { console.error('[ScrapeAll] Westword error:', err); }
+
+  try {
+    console.log('[ScrapeAll] GoldenBuzz…');
+    const gb: Partial<Event>[] = [];
+    for (const neighborhood of DENVER.goldenBuzzNeighborhoods) {
+      const ev = await scraper.scrapeGoldenBuzz(neighborhood);
+      gb.push(...ev);
+      await delay(1500);
+    }
+    await upsertEvents(gb, 'GoldenBuzz');
+    results.goldenbuzz = gb.length;
+  } catch (err) { console.error('[ScrapeAll] GoldenBuzz error:', err); }
+
+  try {
+    console.log('[ScrapeAll] Eventbrite…');
+    const eb = await scraper.scrapeEventbrite({
+      type: 'Point',
+      coordinates: [DENVER.center.lng, DENVER.center.lat],
+    });
+    await upsertRawEvents(eb, 'Eventbrite');
+    results.eventbrite = eb.length;
+  } catch (err) { console.error('[ScrapeAll] Eventbrite error:', err); }
+
+  try {
+    console.log('[ScrapeAll] Yelp…');
+    const yelp = await scraper.scrapeYelp(
+      { type: 'Point', coordinates: [DENVER.center.lng, DENVER.center.lat] },
+      ['bars', 'restaurants', 'pubs', 'cocktailbars']
+    );
+    await upsertRawEvents(yelp, 'Yelp');
+    results.yelp = yelp.length;
+  } catch (err) { console.error('[ScrapeAll] Yelp error:', err); }
+
+  try {
+    console.log('[ScrapeAll] Google Sheets…');
+    const sheets = await scraper.scrapeGoogleSpreadsheet();
+    await upsertEvents(sheets, 'GoogleSheets');
+    results.sheets = sheets.length;
+  } catch (err) { console.error('[ScrapeAll] Google Sheets error:', err); }
+
+  console.log('[ScrapeAll] Done.', results);
 });
 
 // ── Calendar feedback polling — every 6 hours ─────────────────────────────────
