@@ -115,6 +115,18 @@ cron.schedule('0 5 * * *', async () => {
   }
 });
 
+// ── Debug: trigger scrapes on-demand ─────────────────────────────────────────
+app.post('/api/debug/scrape-westword', async (_req, res) => {
+  try {
+    const scraper = new Scraper();
+    const events = await scraper.scrapeWestword();
+    await upsertRawEvents(events, 'Westword');
+    res.json({ ok: true, count: events.length });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message ?? 'Unknown error' });
+  }
+});
+
 // ── Calendar feedback polling — every 6 hours ─────────────────────────────────
 cron.schedule('0 */6 * * *', async () => {
   console.log('[Cron] Calendar feedback poll starting…');
