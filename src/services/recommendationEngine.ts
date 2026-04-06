@@ -50,6 +50,27 @@ function applyTagWeightUpdates(
   return { ...matrix, tag_weights: weights, last_updated: new Date().toISOString() };
 }
 
+// Denver is UTC-6 (MDT, Mar–Nov) / UTC-7 (MST, Nov–Mar).
+// We use a fixed offset for converting local Denver times to UTC.
+const DENVER_UTC_OFFSET_HOURS = (() => {
+  // Determine MST vs MDT based on current date
+  const now = new Date();
+  const jan = new Date(now.getFullYear(), 0, 1);
+  const jul = new Date(now.getFullYear(), 6, 1);
+  const stdOffset = Math.max(jan.getTimezoneOffset(), jul.getTimezoneOffset());
+  const isDST = now.getTimezoneOffset() < stdOffset;
+  // Server is UTC so we manually track Denver offset
+  // MDT = UTC-6 (offset to add to local time to get UTC)
+  // MST = UTC-7
+  const month = now.getMonth() + 1; // 1-12
+  // DST: second Sunday in March through first Sunday in November
+  const inDST = month > 3 || (month === 3 && now.getDate() >= 8) || month < 11;
+  return inDST ? 6 : 7;
+})();
+
+// Denver city center fallback coordinates
+const DENVER_CENTER_COORDS: [number, number] = [-104.9847, 39.7392];
+
 // ─── Recommendation Engine ────────────────────────────────────────────────────
 
 class RecommendationEngine {
@@ -63,8 +84,10 @@ class RecommendationEngine {
   async runForEligibleUsers(): Promise<void> {
     const now = new Date();
     const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-    const todayName = dayNames[now.getDay()];
-    const currentHour = now.getUTCHours(); // compare to UTC
+    const todayName = dayNames[now.getUTCDay()];
+    const currentHourUtc = now.getUTCHours();
+
+    console.log(`[RecommendationEngine] Tick — UTC ${currentHourUtc}:00, day=${todayName}`);
 
     const users = await User.findAll({
       where: { onboarding_complete: true },
@@ -72,8 +95,18 @@ class RecommendationEngine {
 
     for (const user of users) {
       try {
-        const shouldRun = this.userMatchesSchedule(user, todayName, currentHour);
+        const shouldRun = this.userMatchesSchedule(user, todayName, currentHourUtc);
         if (!shouldRun) continue;
+
+        // Daily-frequency users: only run once per UTC day
+        const freq = user.recommendation_frequency ?? 'weekly';
+        if (freq === 'daily') {
+          const alreadyRan = await this.userAlreadyRanToday(user.id);
+          if (alreadyRan) {
+            console.log(`[RecommendationEngine] User ${user.id}: already proposed today — skipping`);
+            continue;
+          }
+        }
 
         console.log(`[RecommendationEngine] Running for user ${user.id} (${user.email})`);
         await this.runForUser(user);
@@ -81,6 +114,15 @@ class RecommendationEngine {
         console.error(`[RecommendationEngine] Error for user ${user.id}:`, err);
       }
     }
+  }
+
+  private async userAlreadyRanToday(userId: number): Promise<boolean> {
+    const startOfUtcDay = new Date();
+    startOfUtcDay.setUTCHours(0, 0, 0, 0);
+    const count = await UserEventRecommendation.count({
+      where: { user_id: userId, proposed_at: { [Op.gte]: startOfUtcDay } },
+    });
+    return count > 0;
   }
 
   /**
@@ -149,14 +191,17 @@ class RecommendationEngine {
     const budget = prefs.budget ?? 'moderate';
     const maxPrice = BUDGET_MAX_PRICE[budget] ?? 50;
 
-    // Reference location: work on weekdays, home on weekends
-    const refLocation = window.isWeekend
+    // Reference location: work on weekdays, home on weekends; fall back to Denver center
+    const rawRef = window.isWeekend
       ? (user.home_location ?? user.work_location)
       : (user.work_location ?? user.home_location);
 
-    if (!refLocation?.coordinates) {
-      console.warn(`User ${user.id}: no reference location set`);
-      return [];
+    const refLocation = rawRef?.coordinates
+      ? rawRef
+      : { coordinates: DENVER_CENTER_COORDS };
+
+    if (!rawRef?.coordinates) {
+      console.warn(`User ${user.id}: no location set — using Denver center as fallback`);
     }
 
     // Step 1: Time filter — events that start within the open window
@@ -242,15 +287,22 @@ class RecommendationEngine {
         const validDays: number[] = recurrence?.dayOfWeek ?? [];
         if (!validDays.includes(currentDayOfWeek)) return false;
 
-        // Check time falls within open window
-        const startHour = happyHourSched?.start
+        // Check time falls within open window.
+        // happy_hour_schedule times are Denver local — convert to UTC before comparing.
+        const localStartHour = happyHourSched?.start
           ? parseInt(happyHourSched.start.split(':')[0], 10)
           : (event.datetime as any)?.start
-          ? new Date((event.datetime as any).start).getHours()
-          : 17; // default 5pm
+          ? new Date((event.datetime as any).start).getUTCHours()
+          : 17; // default 5pm local
+
+        const startHourUtc = (localStartHour + DENVER_UTC_OFFSET_HOURS) % 24;
 
         const eventStartTime = new Date(window.start);
-        eventStartTime.setHours(startHour, 0, 0, 0);
+        eventStartTime.setUTCHours(startHourUtc, 0, 0, 0);
+        // If UTC conversion wrapped to next day, advance by one day
+        if (startHourUtc < 6 && localStartHour >= 12) {
+          eventStartTime.setUTCDate(eventStartTime.getUTCDate() + 1);
+        }
 
         if (eventStartTime < windowStart || eventStartTime > windowEnd) return false;
       } else {
@@ -479,28 +531,27 @@ class RecommendationEngine {
   /** Determines whether a user's schedule matches the current time */
   private userMatchesSchedule(user: User, todayName: string, currentHourUtc: number): boolean {
     const days = user.recommendation_days ?? [];
-    if (!days.includes(todayName)) return false;
+
+    // If days list is empty, treat as "every day"
+    if (days.length > 0 && !days.includes(todayName)) return false;
 
     const freq = user.recommendation_frequency ?? 'weekly';
-    const time = user.recommendation_time ?? 'morning';
 
-    // morning = ~14:00 UTC (7am MST), midday = ~18:00 UTC (11am MST)
-    const targetHour = time === 'morning' ? 14 : 18;
-    if (currentHourUtc !== targetHour) return false;
-
+    // Daily users: eligible at any hour (once-per-day guard is enforced separately)
     if (freq === 'daily') return true;
 
-    const dow = new Date().getDay(); // 0=Sun
+    const time = user.recommendation_time ?? 'morning';
+    // morning = 14:00 UTC (8am MDT / 7am MST), midday = 18:00 UTC (12pm MDT)
+    const targetHour = time === 'morning' ? 14 : 18;
 
-    if (freq === '2x_week') {
-      // Monday (1) and Thursday (4)
-      return dow === 1 || dow === 4;
-    }
+    // Allow ±1 hour window so cron doesn't need to fire at the exact minute
+    const hourDiff = Math.abs(currentHourUtc - targetHour);
+    if (hourDiff > 1) return false;
 
-    if (freq === 'weekly') {
-      // Monday only
-      return dow === 1;
-    }
+    const dow = new Date().getUTCDay(); // 0=Sun
+
+    if (freq === '2x_week') return dow === 1 || dow === 4;
+    if (freq === 'weekly') return dow === 1;
 
     return false;
   }

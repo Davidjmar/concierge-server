@@ -184,38 +184,51 @@ export class CalendarService {
     user: User,
     daysAhead = 14
   ): { start: Date; end: Date; isWeekend: boolean }[] {
-    const preferredDays = new Set(
-      (user.recommendation_days ?? ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'])
-        .map(d => d.toLowerCase())
+    const preferredDays = user.recommendation_days ?? [];
+    const preferredDaySet = new Set(
+      preferredDays.length > 0
+        ? preferredDays.map(d => d.toLowerCase())
+        : ['monday', 'tuesday', 'wednesday', 'thursday', 'friday']
     );
 
     const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
     const openWindows: { start: Date; end: Date; isWeekend: boolean }[] = [];
 
+    // Denver UTC offset: MDT = UTC-6 (Mar–Nov), MST = UTC-7 (Nov–Mar)
+    // Offset in hours to add to Denver local time to get UTC
     const now = new Date();
+    const month = now.getUTCMonth() + 1; // 1-12
+    const inDST = month >= 3 && month <= 11;
+    const utcOffset = inDST ? 6 : 7;
 
     for (let i = 0; i < daysAhead; i++) {
       const day = new Date(now);
-      day.setDate(now.getDate() + i);
-      const dayName = dayNames[day.getDay()];
+      day.setUTCDate(now.getUTCDate() + i);
+      const dayName = dayNames[day.getUTCDay()];
 
-      if (!preferredDays.has(dayName)) continue;
+      if (!preferredDaySet.has(dayName)) continue;
 
-      const isWeekend = day.getDay() === 0 || day.getDay() === 6;
+      const isWeekend = day.getUTCDay() === 0 || day.getUTCDay() === 6;
+
+      // Window times in Denver local, converted to UTC by adding utcOffset.
+      // Weekday: 4pm–11pm Denver = 22:00–05:00 UTC (next day)
+      // Weekend: 11am–11pm Denver = 17:00–05:00 UTC (next day)
+      const localStartHour = isWeekend ? 11 : 16;
+      const localEndHour = 23; // 11pm Denver
+
       const windowStart = new Date(day);
-      const windowEnd = new Date(day);
+      windowStart.setUTCHours(localStartHour + utcOffset, 0, 0, 0);
 
-      if (isWeekend) {
-        // Weekend: 11am–10pm window
-        windowStart.setHours(11, 0, 0, 0);
-        windowEnd.setHours(22, 0, 0, 0);
+      const windowEnd = new Date(day);
+      const endUtcHour = localEndHour + utcOffset;
+      if (endUtcHour >= 24) {
+        windowEnd.setUTCDate(windowEnd.getUTCDate() + 1);
+        windowEnd.setUTCHours(endUtcHour - 24, 0, 0, 0);
       } else {
-        // Weekday: 4pm–10pm window
-        windowStart.setHours(16, 0, 0, 0);
-        windowEnd.setHours(22, 0, 0, 0);
+        windowEnd.setUTCHours(endUtcHour, 0, 0, 0);
       }
 
-      // Check if this window is free (not overlapping any busy window)
+      // Check if this window is free
       const isBusy = busyWindows.some(
         bw => bw.start < windowEnd && bw.end > windowStart
       );

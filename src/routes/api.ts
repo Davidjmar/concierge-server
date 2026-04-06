@@ -3,6 +3,7 @@ import User from '../models/user.js';
 import Event from '../models/event.js';
 import UserEventRecommendation from '../models/userEventRecommendation.js';
 import geocodingService from '../services/geocodingService.js';
+import recommendationEngine from '../services/recommendationEngine.js';
 import { UserPreferences, UserLocation, UserPreferencesV2, GeoPoint } from '../types/index.js';
 import { Op } from 'sequelize';
 
@@ -180,6 +181,25 @@ router.post('/proposals/:id/pass', async (req: Request, res: Response) => {
     });
 
     res.json({ ok: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message ?? 'Unknown error' });
+  }
+});
+
+// ─── Debug: trigger recommendation run immediately ────────────────────────────
+
+router.post('/debug/run-recommendations', async (req: Request, res: Response) => {
+  try {
+    const { userId } = req.body;
+    if (userId) {
+      const user = await User.findByPk(parseInt(userId, 10));
+      if (!user) return res.status(404).json({ error: 'User not found' });
+      await recommendationEngine.runForUser(user);
+      res.json({ ok: true, message: `Ran for user ${user.id}` });
+    } else {
+      await recommendationEngine.runForEligibleUsers();
+      res.json({ ok: true, message: 'Ran for all eligible users' });
+    }
   } catch (error: any) {
     res.status(500).json({ error: error?.message ?? 'Unknown error' });
   }
