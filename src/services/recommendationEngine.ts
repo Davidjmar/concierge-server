@@ -345,6 +345,7 @@ class RecommendationEngine {
         ...(prefs.event_types ?? []),
         ...(prefs.drink ?? []),
         ...(prefs.vibe ?? []),
+        ...(prefs.food ?? []),
       ];
       const overlap = tags.filter(t => allPrefTags.includes(t)).length;
       let score = overlap;
@@ -352,7 +353,30 @@ class RecommendationEngine {
       // Apply interest matrix weights
       for (const tag of tags) {
         const weight = matrix.tag_weights[tag] ?? 1.0;
-        score += (weight - 1.0) * 0.5; // additive boost/decay from weights
+        score += (weight - 1.0) * 0.5;
+      }
+
+      // Boost: activity level match
+      const activityLevel = prefs.activity_level ?? 'medium';
+      const ACTIVITY_TAGS: Record<string, string[]> = {
+        low:    ['chill', 'bar', 'happy_hour', 'wine', 'comedy', 'film'],
+        medium: ['social', 'trivia', 'concert', 'art', 'market'],
+        high:   ['outdoor', 'active', 'hiking', 'festival', 'sports'],
+      };
+      if (tags.some(t => (ACTIVITY_TAGS[activityLevel] ?? []).includes(t))) score += 0.25;
+
+      // Boost/decay: indoor/outdoor preference
+      const indoorOutdoor = prefs.indoor_outdoor ?? 'no_preference';
+      if (indoorOutdoor !== 'no_preference') {
+        if (tags.includes(indoorOutdoor)) score += 0.2;
+        const opposite = indoorOutdoor === 'indoor' ? 'outdoor' : 'indoor';
+        if (tags.includes(opposite)) score -= 0.15;
+      }
+
+      // Boost: dietary tag match
+      const dietary = prefs.dietary ?? [];
+      if (dietary.length > 0) {
+        score += tags.filter(t => dietary.includes(t)).length * 0.2;
       }
 
       // Boost: free events for budget-conscious users
@@ -363,9 +387,6 @@ class RecommendationEngine {
 
       // Boost: walkable (within 1 mile)
       if (distanceMiles <= 1) score += 0.2;
-
-      // Decay: events recently proposed to *any* user get a small freshness boost for less-seen events
-      // (implemented as a flat small decay for all — freshness is implicit via excluded IDs)
 
       return { event, score };
     });

@@ -12,6 +12,38 @@ interface Location {
   address?: string;
 }
 
+/**
+ * Returns the next UTC Date on which a recurring event occurs at the given
+ * Denver local time (MDT = UTC-6). Scans up to 7 days ahead.
+ */
+function nextOccurrence(dayOfWeek: number[], hour: number, min: number): Date {
+  const DENVER_OFFSET_MS = 6 * 60 * 60 * 1000; // MDT
+  const now = new Date();
+  for (let daysAhead = 0; daysAhead <= 7; daysAhead++) {
+    const candidate = new Date(now.getTime() + daysAhead * 24 * 60 * 60 * 1000);
+    // Set to the given Denver local hour in UTC
+    candidate.setUTCHours(hour + 6, min, 0, 0);
+    const denverDay = new Date(candidate.getTime() - DENVER_OFFSET_MS).getUTCDay();
+    if (dayOfWeek.includes(denverDay) && candidate > now) return candidate;
+  }
+  // Fallback: 7 days out
+  const fallback = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+  fallback.setUTCHours(hour + 6, min, 0, 0);
+  return fallback;
+}
+
+/**
+ * Attempts to extract a venue/restaurant name from a Westword RSS article title.
+ * Strips common editorial lead-ins and trailing clauses.
+ */
+function extractVenueFromTitle(title: string): string | null {
+  const stripped = title
+    .replace(/^(the\s+best|best|new|review|inside|first look at|visit|at|the)\s+/i, '')
+    .replace(/\s+(opens|is|has|launches|now serving|this week|in denver|review).*$/i, '')
+    .trim();
+  return stripped.length > 3 && stripped.length < 60 ? stripped : null;
+}
+
 // ─── Eventbrite ───────────────────────────────────────────────────────────────
 
 interface EventbriteEvent {
@@ -428,11 +460,12 @@ export class Scraper {
 
     const $ = cheerio.load(resp.data, { xmlMode: true });
 
-    $('item').each((_, el) => {
+    const items = $('item').toArray();
+    for (const el of items) {
       // Only food/drink/restaurant editorial coverage
       const categories = $(el).find('category').map((__, c) => $(c).text().toLowerCase()).get();
       const isFood = categories.some(c => c.includes('food') || c.includes('drink') || c.includes('restaurant'));
-      if (!isFood) return;
+      if (!isFood) continue;
 
       const title = $(el).find('title').text().trim();
       const link = $(el).find('link').text().trim() || $(el).find('guid').text().trim();
@@ -440,8 +473,8 @@ export class Scraper {
       const pubDateStr = $(el).find('pubDate').text().trim();
       const pubDate = pubDateStr ? new Date(pubDateStr) : null;
 
-      if (!title || !link || !pubDate || isNaN(pubDate.getTime())) return;
-      if (pubDate < thirtyDaysAgo) return; // only recent coverage
+      if (!title || !link || !pubDate || isNaN(pubDate.getTime())) continue;
+      if (pubDate < thirtyDaysAgo) continue; // only recent coverage
 
       const lower = (title + ' ' + description).toLowerCase();
       let type: EventType = 'social';
@@ -456,9 +489,20 @@ export class Scraper {
 
       // Use publication date as the reference date for the item
       const start = new Date(pubDate);
-      start.setHours(18, 0, 0, 0);
-      const end = new Date(pubDate);
-      end.setHours(22, 0, 0, 0);
+      start.setUTCHours(0, 0, 0, 0); // midnight UTC — keeps date stable across timezones
+      const end = new Date(start.getTime() + 4 * 60 * 60 * 1000);
+
+      // Attempt to geocode a venue from the article title
+      const venueName = extractVenueFromTitle(title);
+      let coords: [number, number] = [DENVER.center.lng, DENVER.center.lat];
+      let address = 'Denver, CO';
+      if (venueName) {
+        const geocoded = await geocodingService.getCoordinates(`${venueName}, Denver, CO`);
+        if (geocoded) {
+          coords = geocoded as [number, number];
+          address = `${venueName}, Denver, CO`;
+        }
+      }
 
       results.push({
         title,
@@ -467,17 +511,13 @@ export class Scraper {
         source: 'westword',
         type,
         price: { min: 0, max: 30 },
-        location: {
-          type: 'Point',
-          coordinates: [DENVER.center.lng, DENVER.center.lat],
-          address: 'Denver, CO',
-        },
+        location: { type: 'Point', coordinates: coords, address },
         datetime: { start, end },
         recurring: false,
         tags,
         city: 'denver',
       });
-    });
+    }
 
     return results;
   }
@@ -551,11 +591,11 @@ export class Scraper {
 
           const [sh, sm] = startTime24.split(':').map(Number);
           const [eh, em] = endTime24.split(':').map(Number);
-          const now = new Date();
-          const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), sh, sm, 0);
-          const end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), eh, em, 0);
 
           const dayNumbers = this.parseDaysToNumbers(daysText);
+          const start = nextOccurrence(dayNumbers.length > 0 ? dayNumbers : [1, 2, 3, 4, 5], sh, sm);
+          const durationMs = ((eh * 60 + em) - (sh * 60 + sm)) * 60 * 1000;
+          const end = new Date(start.getTime() + (durationMs > 0 ? durationMs : 2 * 60 * 60 * 1000));
 
           // Fetch specials page for this venue
           let specials = '';
@@ -694,11 +734,11 @@ export class Scraper {
           const endTime = this.convertTo24Hour(timeMatch[2]);
           const days = this.parseDaysFromTimeRange(timeRange);
 
-          const now = new Date();
           const [sh, sm] = startTime.split(':').map(Number);
           const [eh, em] = endTime.split(':').map(Number);
-          const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), sh, sm, 0);
-          const end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), eh, em, 0);
+          const start = nextOccurrence(days.length > 0 ? days : [1, 2, 3, 4, 5], sh, sm);
+          const durationMs = ((eh * 60 + em) - (sh * 60 + sm)) * 60 * 1000;
+          const end = new Date(start.getTime() + (durationMs > 0 ? durationMs : 2 * 60 * 60 * 1000));
 
           const allSpecials = [drinkSpecials, foodSpecials].filter(Boolean).join('\n');
 

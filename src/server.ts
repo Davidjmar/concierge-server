@@ -5,12 +5,14 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
+import { QueryTypes } from 'sequelize';
 import apiRoutes from './routes/api.js';
 import authRoutes from './routes/auth.js';
 import recommendationEngine from './services/recommendationEngine.js';
 import { Scraper } from './services/scraper.js';
 import { requireDebugSecret } from './middleware/auth.js';
 import initDatabase from './config/init.js';
+import sequelize from './config/database.js';
 import Event from './models/event.js';
 import { DENVER } from './config/cities.js';
 
@@ -208,6 +210,24 @@ app.post('/api/debug/scrape-all', requireDebugSecret, async (_req, res) => {
   } catch (err) { console.error('[ScrapeAll] Google Sheets error:', err); }
 
   console.log('[ScrapeAll] Done.', results);
+});
+
+// ── Event expiry — daily 2 AM UTC ────────────────────────────────────────────
+cron.schedule('0 2 * * *', async () => {
+  console.log('[Cron] Event expiry check starting…');
+  try {
+    const [, count] = await sequelize.query(
+      `UPDATE events
+       SET is_active = false
+       WHERE is_active = true
+         AND recurring = false
+         AND (datetime->>'end')::timestamptz < NOW()`,
+      { type: QueryTypes.UPDATE }
+    );
+    console.log(`[Cron] Expired ${count} past events`);
+  } catch (err) {
+    console.error('[Cron] Event expiry error:', err);
+  }
 });
 
 // ── Calendar feedback polling — every 6 hours ─────────────────────────────────
