@@ -46,9 +46,7 @@
 // ─── State ────────────────────────────────────────────────────────────────────
 
 const state = {
-  userId: null,
   step: 1,
-  locations: { home: '', work: '' },
   preferences: {
     drink: [],
     food: [],
@@ -69,41 +67,41 @@ const state = {
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
-(function init() {
+(async function init() {
   const params = new URLSearchParams(window.location.search);
   const step = parseInt(params.get('step') ?? '1', 10);
-  const uid = params.get('uid');
 
-  if (uid) {
-    state.userId = parseInt(uid, 10);
-    localStorage.setItem('kno_user_id', uid);
-  } else {
-    const stored = localStorage.getItem('kno_user_id');
-    if (stored) {
-      state.userId = parseInt(stored, 10);
-      // Already connected — check onboarding status
-      if (step === 1) {
-        fetch(`/api/users/onboarding/status?userId=${stored}`)
-          .then(r => r.json())
-          .then(data => {
-            if (data.onboarding_complete) {
-              window.location.href = `/proposals`;
-            } else {
-              goTo(2);
-            }
-          })
-          .catch(() => goTo(2));
+  // Check if already logged in via session cookie
+  if (step === 1) {
+    try {
+      const res = await fetch('/api/me');
+      if (res.ok) {
+        const me = await res.json();
+        if (me.onboarding_complete) {
+          window.location.href = '/proposals';
+          return;
+        }
+        // Logged in but onboarding incomplete — continue from step 2
+        wireInteractions();
+        goTo(2);
         return;
       }
+    } catch {
+      // Not logged in — show landing page
     }
   }
 
-  // Chip grids
+  wireInteractions();
+  goTo(step);
+})();
+
+// ─── Wire up interactive controls ────────────────────────────────────────────
+
+function wireInteractions() {
   document.querySelectorAll('.chip').forEach(chip => {
     chip.addEventListener('click', () => chip.classList.toggle('selected'));
   });
 
-  // Toggle buttons (single-select)
   ['toggle-activity', 'toggle-setting', 'toggle-frequency', 'toggle-proposals'].forEach(id => {
     const container = document.getElementById(id);
     if (!container) return;
@@ -115,7 +113,6 @@ const state = {
     });
   });
 
-  // Budget options (single-select)
   document.querySelectorAll('#budget-opts .budget-opt').forEach(opt => {
     opt.addEventListener('click', () => {
       document.querySelectorAll('#budget-opts .budget-opt').forEach(o => o.classList.remove('selected'));
@@ -123,16 +120,13 @@ const state = {
     });
   });
 
-  // Distance (single-select)
   document.querySelectorAll('#toggle-distance .toggle-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('#toggle-distance .toggle-btn').forEach(b => b.classList.remove('selected'));
       btn.classList.add('selected');
     });
   });
-
-  goTo(step);
-})();
+}
 
 // ─── Navigation ───────────────────────────────────────────────────────────────
 
@@ -160,28 +154,17 @@ function toggleSelected(containerId) {
 
 async function saveLocations() {
   const home = document.getElementById('home-address').value.trim();
-  if (!home) {
-    alert('Please enter your home address or neighborhood.');
-    return;
-  }
-  state.locations.home = home;
-  state.locations.work = document.getElementById('work-address').value.trim();
-
-  if (!state.userId) {
-    // User hasn't been created yet (no Google OAuth in dev mode) — skip
-    goTo(3);
-    return;
-  }
+  if (!home) { alert('Please enter your home address or neighborhood.'); return; }
 
   try {
-    const res = await fetch('/api/users/onboarding/locations', {
+    const res = await fetch('/api/onboarding/locations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: state.userId, home, work: state.locations.work }),
+      body: JSON.stringify({ home, work: document.getElementById('work-address').value.trim() }),
     });
-    if (!res.ok) throw new Error('Failed to save locations');
+    if (!res.ok) throw new Error();
     goTo(3);
-  } catch (err) {
+  } catch {
     alert('Error saving locations. Please try again.');
   }
 }
@@ -202,18 +185,15 @@ async function saveTastes() {
       document.querySelector('#toggle-distance .toggle-btn.selected')?.dataset.val ?? '5', 10
     ),
   };
-
   Object.assign(state.preferences, prefs);
 
-  if (!state.userId) { goTo(4); return; }
-
   try {
-    const res = await fetch('/api/users/onboarding/preferences', {
+    const res = await fetch('/api/onboarding/preferences', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: state.userId, preferences: prefs }),
+      body: JSON.stringify({ preferences: prefs }),
     });
-    if (!res.ok) throw new Error('Failed to save preferences');
+    if (!res.ok) throw new Error();
     goTo(4);
   } catch {
     alert('Error saving preferences. Please try again.');
@@ -228,18 +208,15 @@ async function saveSchedule() {
     days: chipsSelected('chips-days'),
     max_proposals: parseInt(toggleSelected('toggle-proposals') ?? '2', 10),
   };
-
   Object.assign(state.schedule, schedule);
 
-  if (!state.userId) { showSummary(); goTo(5); return; }
-
   try {
-    const res = await fetch('/api/users/onboarding/schedule', {
+    const res = await fetch('/api/onboarding/schedule', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: state.userId, ...schedule }),
+      body: JSON.stringify(schedule),
     });
-    if (!res.ok) throw new Error('Failed to save schedule');
+    if (!res.ok) throw new Error();
     showSummary();
     goTo(5);
   } catch {
@@ -260,14 +237,10 @@ function showSummary() {
     `Max distance: ${prefs.max_distance_miles} mi`,
     `Frequency: ${sched.frequency.replace(/_/g, ' ')}`,
     sched.days.length ? `Days: ${sched.days.join(', ')}` : null,
-    `Proposals per run: ${sched.max_proposals}`,
+    `Proposals per week: ${sched.max_proposals}`,
   ].filter(Boolean);
 
   document.getElementById('profile-summary').innerHTML = items
     .map(i => `<p class="text-sm" style="margin-bottom:0.4rem">✓ ${i}</p>`)
     .join('');
-
-  if (state.userId) {
-    document.getElementById('proposals-link').href = `/proposals?uid=${state.userId}`;
-  }
 }

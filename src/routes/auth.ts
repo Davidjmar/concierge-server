@@ -49,12 +49,12 @@ router.get('/google/callback', async (req: Request, res: Response) => {
     });
 
     if (isNew || !user.onboarding_complete) {
-      // New user — send to onboarding
-      return res.redirect(`/?step=2&uid=${user.id}`);
+      // New user — send to onboarding (cookie is set, no uid needed in URL)
+      return res.redirect('/?step=2');
     }
 
     // Returning user — send to proposals
-    return res.redirect(`/proposals?uid=${user.id}`);
+    return res.redirect('/proposals');
   } catch (err: any) {
     console.error('Error handling OAuth callback:', err);
     return res.redirect('/?auth=error');

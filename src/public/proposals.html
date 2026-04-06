@@ -61,19 +61,9 @@
 
 <script>
 (async () => {
-  const params = new URLSearchParams(window.location.search);
-  // Try query param first (redirect flow), then localStorage (returning user)
-  const uidParam = params.get('uid');
-  if (uidParam) localStorage.setItem('kno_user_id', uidParam);
-  const userId = uidParam || localStorage.getItem('kno_user_id');
-
-  if (!userId) {
-    window.location.href = '/';
-    return;
-  }
-
   try {
-    const res = await fetch(`/api/proposals/${userId}`);
+    const res = await fetch('/api/proposals');
+    if (res.status === 401) { window.location.href = '/'; return; }
     if (!res.ok) throw new Error('Failed to fetch proposals');
     const { proposals } = await res.json();
 

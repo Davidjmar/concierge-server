@@ -206,23 +206,12 @@
 </div>
 
 <script>
-let userId = null;
-
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 (async () => {
-  const params = new URLSearchParams(window.location.search);
-  const uidParam = params.get('uid');
-  if (uidParam) localStorage.setItem('kno_user_id', uidParam);
-  userId = parseInt(uidParam || localStorage.getItem('kno_user_id') || '', 10);
-
-  if (!userId || isNaN(userId)) {
-    window.location.href = '/';
-    return;
-  }
-
   try {
-    const res = await fetch(`/api/users/settings?userId=${userId}`);
+    const res = await fetch('/api/settings');
+    if (res.status === 401) { window.location.href = '/'; return; }
     if (!res.ok) throw new Error();
     const data = await res.json();
     populate(data);
@@ -338,10 +327,10 @@ async function saveLocation() {
   if (!home) { showStatus('status-location', 'error', 'Home address is required'); return; }
 
   try {
-    const res = await fetch('/api/users/onboarding/locations', {
+    const res = await fetch('/api/onboarding/locations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId, home, work: document.getElementById('work-address').value.trim() }),
+      body: JSON.stringify({ home, work: document.getElementById('work-address').value.trim() }),
     });
     if (!res.ok) throw new Error();
     showStatus('status-location', 'success', 'Saved');
@@ -364,10 +353,10 @@ async function saveTastes() {
   };
 
   try {
-    const res = await fetch('/api/users/onboarding/preferences', {
+    const res = await fetch('/api/onboarding/preferences', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId, preferences: prefs }),
+      body: JSON.stringify({ preferences: prefs }),
     });
     if (!res.ok) throw new Error();
     showStatus('status-tastes', 'success', 'Saved');
@@ -387,10 +376,10 @@ async function saveSchedule() {
   };
 
   try {
-    const res = await fetch('/api/users/onboarding/schedule', {
+    const res = await fetch('/api/onboarding/schedule', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId, ...schedule }),
+      body: JSON.stringify(schedule),
     });
     if (!res.ok) throw new Error();
     showStatus('status-schedule', 'success', 'Saved');

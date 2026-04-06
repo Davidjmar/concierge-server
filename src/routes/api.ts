@@ -4,12 +4,12 @@ import Event from '../models/event.js';
 import UserEventRecommendation from '../models/userEventRecommendation.js';
 import geocodingService from '../services/geocodingService.js';
 import recommendationEngine from '../services/recommendationEngine.js';
-import { UserPreferences, UserLocation, UserPreferencesV2, GeoPoint } from '../types/index.js';
-import { Op } from 'sequelize';
+import { requireAuth, requireDebugSecret } from '../middleware/auth.js';
+import { UserPreferencesV2, GeoPoint } from '../types/index.js';
 
 const router = express.Router();
 
-// ─── Health ────────────────────────────────────────────────────────────────────
+// ─── Health (public) ──────────────────────────────────────────────────────────
 
 router.get('/health', async (_req: Request, res: Response) => {
   try {
@@ -20,101 +20,26 @@ router.get('/health', async (_req: Request, res: Response) => {
   }
 });
 
-// ─── Legacy user CRUD (kept for backward compat) ───────────────────────────────
+// ─── Auth check — who am I? (used by frontend after page load) ────────────────
 
-router.post('/users', async (req: Request, res: Response) => {
-  try {
-    const { email, preferences, location } = req.body;
-    const [user, created] = await User.findOrCreate({
-      where: { email },
-      defaults: { email, preferences, location },
-    });
-    if (!created) await user.update({ preferences, location });
-    res.json(user);
-  } catch (error: any) {
-    res.status(500).json({ error: error?.message ?? 'Unknown error' });
-  }
+router.get('/me', requireAuth, (req: Request, res: Response) => {
+  const u = req.user!;
+  res.json({
+    id: u.id,
+    email: u.email,
+    name: u.name,
+    onboarding_complete: u.onboarding_complete ?? false,
+  });
 });
 
-router.get('/users', async (_req: Request, res: Response) => {
+// ─── Onboarding — Step 2: Locations ──────────────────────────────────────────
+
+router.post('/onboarding/locations', requireAuth, async (req: Request, res: Response) => {
   try {
-    const users = await User.findAll();
-    res.json(users);
-  } catch (error: any) {
-    res.status(500).json({ error: error?.message ?? 'Unknown error' });
-  }
-});
+    const { home, work } = req.body;
+    if (!home) return res.status(400).json({ error: 'home is required' });
 
-// ─── Settings — fetch current user data ──────────────────────────────────────
-
-router.get('/users/settings', async (req: Request, res: Response) => {
-  try {
-    const userId = parseInt(req.query.userId as string, 10);
-    if (isNaN(userId)) return res.status(400).json({ error: 'Invalid userId' });
-
-    const user = await User.findByPk(userId, {
-      attributes: [
-        'id', 'email', 'name',
-        'home_location', 'work_location',
-        'preferences',
-        'recommendation_frequency', 'recommendation_days',
-        'recommendation_time', 'max_proposals_per_run',
-      ],
-    });
-    if (!user) return res.status(404).json({ error: 'User not found' });
-
-    res.json({
-      id: user.id,
-      email: user.email,
-      name: user.name,
-      home_location: user.home_location,
-      work_location: user.work_location,
-      preferences: user.preferences,
-      schedule: {
-        frequency: user.recommendation_frequency,
-        days: user.recommendation_days,
-        time: user.recommendation_time,
-        max_proposals: user.max_proposals_per_run,
-      },
-    });
-  } catch (error: any) {
-    res.status(500).json({ error: error?.message ?? 'Unknown error' });
-  }
-});
-
-router.get('/users/:email', async (req: Request, res: Response) => {
-  try {
-    const user = await User.findOne({ where: { email: req.params.email } });
-    if (!user) return res.status(404).json({ error: 'User not found' });
-    res.json(user);
-  } catch (error: any) {
-    res.status(500).json({ error: error?.message ?? 'Unknown error' });
-  }
-});
-
-// ─── Onboarding — status check ────────────────────────────────────────────────
-
-router.get('/users/onboarding/status', async (req: Request, res: Response) => {
-  try {
-    const userId = parseInt(req.query.userId as string, 10);
-    if (isNaN(userId)) return res.status(400).json({ error: 'Invalid userId' });
-    const user = await User.findByPk(userId, { attributes: ['id', 'onboarding_complete'] });
-    if (!user) return res.status(404).json({ error: 'User not found' });
-    res.json({ onboarding_complete: user.onboarding_complete ?? false });
-  } catch (error: any) {
-    res.status(500).json({ error: error?.message ?? 'Unknown error' });
-  }
-});
-
-// ─── Onboarding — Step 2: Locations ───────────────────────────────────────────
-
-router.post('/users/onboarding/locations', async (req: Request, res: Response) => {
-  try {
-    const { userId, home, work } = req.body;
-    if (!userId || !home) return res.status(400).json({ error: 'userId and home are required' });
-
-    const user = await User.findByPk(userId);
-    if (!user) return res.status(404).json({ error: 'User not found' });
+    const user = req.user!;
 
     const homeCoords = await geocodingService.getCoordinates(`${home}, Denver, CO`);
     const homeLocation: GeoPoint = {
@@ -141,15 +66,10 @@ router.post('/users/onboarding/locations', async (req: Request, res: Response) =
 
 // ─── Onboarding — Step 3: Preferences ────────────────────────────────────────
 
-router.post('/users/onboarding/preferences', async (req: Request, res: Response) => {
+router.post('/onboarding/preferences', requireAuth, async (req: Request, res: Response) => {
   try {
-    const { userId, preferences } = req.body;
-    if (!userId) return res.status(400).json({ error: 'userId is required' });
-
-    const user = await User.findByPk(userId);
-    if (!user) return res.status(404).json({ error: 'User not found' });
-
-    await user.update({ preferences });
+    const { preferences } = req.body;
+    await req.user!.update({ preferences });
     res.json({ ok: true });
   } catch (error: any) {
     res.status(500).json({ error: error?.message ?? 'Unknown error' });
@@ -158,44 +78,51 @@ router.post('/users/onboarding/preferences', async (req: Request, res: Response)
 
 // ─── Onboarding — Step 4: Schedule ───────────────────────────────────────────
 
-router.post('/users/onboarding/schedule', async (req: Request, res: Response) => {
+router.post('/onboarding/schedule', requireAuth, async (req: Request, res: Response) => {
   try {
-    const { userId, frequency, days, max_proposals } = req.body;
-    if (!userId) return res.status(400).json({ error: 'userId is required' });
-
-    const user = await User.findByPk(userId);
-    if (!user) return res.status(404).json({ error: 'User not found' });
-
-    await user.update({
+    const { frequency, days, max_proposals } = req.body;
+    await req.user!.update({
       recommendation_frequency: frequency,
       recommendation_days: days,
       max_proposals_per_run: max_proposals ?? 3,
       onboarding_complete: true,
     });
-
     res.json({ ok: true });
   } catch (error: any) {
     res.status(500).json({ error: error?.message ?? 'Unknown error' });
   }
 });
 
+// ─── Settings — fetch & save ──────────────────────────────────────────────────
+
+router.get('/settings', requireAuth, (req: Request, res: Response) => {
+  const u = req.user!;
+  res.json({
+    id: u.id,
+    email: u.email,
+    name: u.name,
+    home_location: u.home_location,
+    work_location: u.work_location,
+    preferences: u.preferences,
+    schedule: {
+      frequency: u.recommendation_frequency,
+      days: u.recommendation_days,
+      time: u.recommendation_time,
+      max_proposals: u.max_proposals_per_run,
+    },
+  });
+});
+
 // ─── Proposals feed ───────────────────────────────────────────────────────────
 
-router.get('/proposals/:userId', async (req: Request, res: Response) => {
+router.get('/proposals', requireAuth, async (req: Request, res: Response) => {
   try {
-    const userId = parseInt(req.params.userId, 10);
-    if (isNaN(userId)) return res.status(400).json({ error: 'Invalid userId' });
-
-    const user = await User.findByPk(userId);
-    if (!user) return res.status(404).json({ error: 'User not found' });
-
     const proposals = await UserEventRecommendation.findAll({
-      where: { user_id: userId },
+      where: { user_id: req.user!.id },
       include: [{ model: Event }],
       order: [['proposed_at', 'DESC']],
       limit: 50,
     });
-
     res.json({ proposals });
   } catch (error: any) {
     res.status(500).json({ error: error?.message ?? 'Unknown error' });
@@ -204,28 +131,26 @@ router.get('/proposals/:userId', async (req: Request, res: Response) => {
 
 // ─── Pass on a proposal ───────────────────────────────────────────────────────
 
-router.post('/proposals/:id/pass', async (req: Request, res: Response) => {
+router.post('/proposals/:id/pass', requireAuth, async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid id' });
 
-    const rec = await UserEventRecommendation.findByPk(id);
+    const rec = await UserEventRecommendation.findOne({
+      where: { id, user_id: req.user!.id },  // ownership check
+    });
     if (!rec) return res.status(404).json({ error: 'Proposal not found' });
 
-    await rec.update({
-      user_response: 'deleted',
-      response_detected_at: new Date(),
-    });
-
+    await rec.update({ user_response: 'deleted', response_detected_at: new Date() });
     res.json({ ok: true });
   } catch (error: any) {
     res.status(500).json({ error: error?.message ?? 'Unknown error' });
   }
 });
 
-// ─── Debug: trigger recommendation run immediately ────────────────────────────
+// ─── Debug endpoints (secret-gated) ──────────────────────────────────────────
 
-router.post('/debug/run-recommendations', async (req: Request, res: Response) => {
+router.post('/debug/run-recommendations', requireDebugSecret, async (req: Request, res: Response) => {
   try {
     const { userId } = req.body;
     if (userId) {

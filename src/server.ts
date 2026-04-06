@@ -1,4 +1,5 @@
 import express from 'express';
+import cookieParser from 'cookie-parser';
 import cron from 'node-cron';
 import dotenv from 'dotenv';
 import path from 'path';
@@ -8,6 +9,7 @@ import apiRoutes from './routes/api.js';
 import authRoutes from './routes/auth.js';
 import recommendationEngine from './services/recommendationEngine.js';
 import { Scraper } from './services/scraper.js';
+import { requireDebugSecret } from './middleware/auth.js';
 import initDatabase from './config/init.js';
 import Event from './models/event.js';
 import { DENVER } from './config/cities.js';
@@ -18,6 +20,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
 app.use(express.json());
+app.use(cookieParser());
 
 // ── Static assets (onboarding UI, proposals) ─────────────────────────────────
 app.use(express.static(path.join(__dirname, 'public')));
@@ -103,9 +106,9 @@ cron.schedule('0 5 * * *', async () => {
   }
 });
 
-// ── Debug: trigger scrapes on-demand ─────────────────────────────────────────
+// ── Debug: trigger scrapes on-demand (secret-gated) ──────────────────────────
 
-app.post('/api/debug/scrape-westword', async (_req, res) => {
+app.post('/api/debug/scrape-westword', requireDebugSecret, async (_req, res) => {
   try {
     const scraper = new Scraper();
     const events = await scraper.scrapeWestword();
@@ -116,7 +119,7 @@ app.post('/api/debug/scrape-westword', async (_req, res) => {
   }
 });
 
-app.post('/api/debug/scrape-goldenbuzz', async (_req, res) => {
+app.post('/api/debug/scrape-goldenbuzz', requireDebugSecret, async (_req, res) => {
   try {
     const scraper = new Scraper();
     const all: Partial<Event>[] = [];
@@ -132,7 +135,7 @@ app.post('/api/debug/scrape-goldenbuzz', async (_req, res) => {
   }
 });
 
-app.post('/api/debug/scrape-eventbrite', async (_req, res) => {
+app.post('/api/debug/scrape-eventbrite', requireDebugSecret, async (_req, res) => {
   try {
     const scraper = new Scraper();
     const events = await scraper.scrapeEventbrite({
@@ -147,7 +150,7 @@ app.post('/api/debug/scrape-eventbrite', async (_req, res) => {
 });
 
 
-app.post('/api/debug/scrape-sheets', async (_req, res) => {
+app.post('/api/debug/scrape-sheets', requireDebugSecret, async (_req, res) => {
   try {
     const scraper = new Scraper();
     const events = await scraper.scrapeGoogleSpreadsheet();
@@ -159,7 +162,7 @@ app.post('/api/debug/scrape-sheets', async (_req, res) => {
 });
 
 // Runs all sources sequentially — long-running (~5-10 min), check server logs
-app.post('/api/debug/scrape-all', async (_req, res) => {
+app.post('/api/debug/scrape-all', requireDebugSecret, async (_req, res) => {
   // Respond immediately so the HTTP connection doesn't time out
   res.json({ ok: true, message: 'Scrape started — check server logs for progress' });
 
