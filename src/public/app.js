@@ -1,5 +1,48 @@
 /* kno onboarding wizard */
 
+// ─── Typing animation (landing hero) ─────────────────────────────────────────
+
+(function startTyping() {
+  const el = document.getElementById('typing-text');
+  if (!el) return;
+
+  const phrases = [
+    'looking for your next happy hour',
+    'finding your next concert',
+    'browsing events while you live your life',
+    'the fun AI you were promised',
+  ];
+
+  let pi = 0, ci = 0, deleting = false;
+  const TYPING_SPEED = 55;
+  const DELETE_SPEED = 28;
+  const PAUSE_AFTER = 1800;
+  const PAUSE_BEFORE = 300;
+
+  function tick() {
+    const phrase = phrases[pi];
+    if (!deleting) {
+      el.textContent = phrase.slice(0, ++ci);
+      if (ci === phrase.length) {
+        deleting = true;
+        setTimeout(tick, PAUSE_AFTER);
+        return;
+      }
+    } else {
+      el.textContent = phrase.slice(0, --ci);
+      if (ci === 0) {
+        deleting = false;
+        pi = (pi + 1) % phrases.length;
+        setTimeout(tick, PAUSE_BEFORE);
+        return;
+      }
+    }
+    setTimeout(tick, deleting ? DELETE_SPEED : TYPING_SPEED);
+  }
+
+  setTimeout(tick, 600);
+})();
+
 // ─── State ────────────────────────────────────────────────────────────────────
 
 const state = {
