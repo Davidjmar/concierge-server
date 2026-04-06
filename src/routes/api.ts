@@ -45,6 +45,43 @@ router.get('/users', async (_req: Request, res: Response) => {
   }
 });
 
+// ─── Settings — fetch current user data ──────────────────────────────────────
+
+router.get('/users/settings', async (req: Request, res: Response) => {
+  try {
+    const userId = parseInt(req.query.userId as string, 10);
+    if (isNaN(userId)) return res.status(400).json({ error: 'Invalid userId' });
+
+    const user = await User.findByPk(userId, {
+      attributes: [
+        'id', 'email', 'name',
+        'home_location', 'work_location',
+        'preferences',
+        'recommendation_frequency', 'recommendation_days',
+        'recommendation_time', 'max_proposals_per_run',
+      ],
+    });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    res.json({
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      home_location: user.home_location,
+      work_location: user.work_location,
+      preferences: user.preferences,
+      schedule: {
+        frequency: user.recommendation_frequency,
+        days: user.recommendation_days,
+        time: user.recommendation_time,
+        max_proposals: user.max_proposals_per_run,
+      },
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message ?? 'Unknown error' });
+  }
+});
+
 router.get('/users/:email', async (req: Request, res: Response) => {
   try {
     const user = await User.findOne({ where: { email: req.params.email } });
@@ -181,43 +218,6 @@ router.post('/proposals/:id/pass', async (req: Request, res: Response) => {
     });
 
     res.json({ ok: true });
-  } catch (error: any) {
-    res.status(500).json({ error: error?.message ?? 'Unknown error' });
-  }
-});
-
-// ─── Settings — fetch current user data ──────────────────────────────────────
-
-router.get('/users/settings', async (req: Request, res: Response) => {
-  try {
-    const userId = parseInt(req.query.userId as string, 10);
-    if (isNaN(userId)) return res.status(400).json({ error: 'Invalid userId' });
-
-    const user = await User.findByPk(userId, {
-      attributes: [
-        'id', 'email', 'name',
-        'home_location', 'work_location',
-        'preferences',
-        'recommendation_frequency', 'recommendation_days',
-        'recommendation_time', 'max_proposals_per_run',
-      ],
-    });
-    if (!user) return res.status(404).json({ error: 'User not found' });
-
-    res.json({
-      id: user.id,
-      email: user.email,
-      name: user.name,
-      home_location: user.home_location,
-      work_location: user.work_location,
-      preferences: user.preferences,
-      schedule: {
-        frequency: user.recommendation_frequency,
-        days: user.recommendation_days,
-        time: user.recommendation_time,
-        max_proposals: user.max_proposals_per_run,
-      },
-    });
   } catch (error: any) {
     res.status(500).json({ error: error?.message ?? 'Unknown error' });
   }
