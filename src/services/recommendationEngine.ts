@@ -158,19 +158,21 @@ class RecommendationEngine {
     // max_proposals_per_run is a weekly budget — check how many already sent this week
     const weeklyLimit = user.max_proposals_per_run ?? 3;
     const alreadySentThisWeek = await this.proposalsThisWeek(user.id);
-    const remaining = weeklyLimit - alreadySentThisWeek;
+    const remainingThisWeek = weeklyLimit - alreadySentThisWeek;
 
-    if (remaining <= 0) {
+    if (remainingThisWeek <= 0) {
       console.log(`User ${user.id}: weekly proposal limit (${weeklyLimit}) reached — skipping`);
       return;
     }
 
+    // Hard cap of 1 per daily run so proposals are spread across the week
+    const proposalsThisRun = Math.min(remainingThisWeek, 1);
     const proposals: { event: Event; score: number }[] = [];
 
     for (const window of openWindows) {
-      if (proposals.length >= remaining) break;
+      if (proposals.length >= proposalsThisRun) break;
       const candidates = await this.getCandidatesForWindow(user, window, proposals.map(p => p.event.id));
-      proposals.push(...candidates.slice(0, remaining - proposals.length));
+      proposals.push(...candidates.slice(0, proposalsThisRun - proposals.length));
     }
 
     if (proposals.length === 0) {
