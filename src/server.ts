@@ -103,8 +103,8 @@ cron.schedule('0 2 * * 0', async () => {
   }
 });
 
-// ── Westword — Friday 6 AM UTC ────────────────────────────────────────────────
-cron.schedule('0 6 * * 5', async () => {
+// ── Westword — daily 5 AM UTC (11 PM MDT) ────────────────────────────────────
+cron.schedule('0 5 * * *', async () => {
   console.log('[Cron] Westword scrape starting…');
   try {
     const scraper = new Scraper();

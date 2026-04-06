@@ -266,72 +266,274 @@ export class Scraper {
 
   // ─── Westword ────────────────────────────────────────────────────────────────
 
+  private readonly WESTWORD_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+  };
+
+  /**
+   * Scrapes Westword Denver for events and food/drink coverage.
+   *
+   * Part 1 — Events calendar (/things-to-do):
+   *   Collects event page URLs, then fetches each page and extracts
+   *   Schema.org JSON-LD structured data (title, date, venue, address,
+   *   price). Only factual fields present in the structured data are used.
+   *
+   * Part 2 — Food & Drink RSS:
+   *   Pulls the main RSS feed and filters for food/drink/restaurant items
+   *   published in the last 30 days. Used as editorial context for
+   *   restaurants and happy hours — no address inference is done here.
+   */
   async scrapeWestword(): Promise<RawEvent[]> {
     const results: RawEvent[] = [];
 
-    // Note: Westword's ToS may restrict scraping. We parse their RSS feed as an
-    // alternative to direct HTML scraping — RSS is generally permissible.
-    const feedUrl = 'https://www.westword.com/denver/Rss.xml?section=arts';
-
+    // Part 1: structured event data from the events calendar
     try {
-      const response = await axios.get(feedUrl, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (compatible; kno-bot/1.0; +https://kno.app)',
-        },
-        timeout: 10000,
-      });
+      const eventLinks = await this.fetchWestwordEventLinks();
+      console.log(`Westword: found ${eventLinks.length} event page links`);
 
-      const $ = cheerio.load(response.data, { xmlMode: true });
-      const items = $('item');
-
-      items.each((_, el) => {
-        const title = $(el).find('title').text().trim();
-        const link = $(el).find('link').text().trim();
-        const description = $(el).find('description').text().replace(/<[^>]+>/g, '').trim().slice(0, 500);
-        const pubDateStr = $(el).find('pubDate').text().trim();
-        const pubDate = pubDateStr ? new Date(pubDateStr) : new Date();
-
-        if (!title || !link) return;
-
-        // Infer event type from title/description
-        const lower = (title + ' ' + description).toLowerCase();
-        let type: EventType = 'social';
-        if (/concert|live music|band|perform/.test(lower)) type = 'concert';
-        else if (/comedy|stand.?up/.test(lower)) type = 'comedy';
-        else if (/art|gallery|exhibit/.test(lower)) type = 'art';
-        else if (/film|movie|cinema/.test(lower)) type = 'film';
-        else if (/market|fair|festival/.test(lower)) type = 'festival';
-        else if (/trivia/.test(lower)) type = 'trivia';
-
-        const tags: string[] = [type, 'westword'];
-        if (/free/.test(lower)) tags.push('free');
-        if (/outdoor/.test(lower)) tags.push('outdoor');
-
-        // Default to Denver center for Westword events (no address in RSS)
-        const coords: [number, number] = [DENVER.center.lng, DENVER.center.lat];
-
-        const start = new Date(pubDate.getFullYear(), pubDate.getMonth(), pubDate.getDate(), 20, 0, 0);
-        const end = new Date(pubDate.getFullYear(), pubDate.getMonth(), pubDate.getDate(), 23, 0, 0);
-
-        results.push({
-          title,
-          description,
-          sourceUrl: link,
-          source: 'westword',
-          type,
-          price: { min: 0, max: 30 },
-          location: { type: 'Point', coordinates: coords, address: 'Denver, CO' },
-          datetime: { start, end },
-          recurring: false,
-          tags,
-          city: 'denver',
-        });
-      });
-
-      console.log(`Westword: fetched ${results.length} events from RSS`);
-    } catch (error) {
-      console.error('Error scraping Westword:', error);
+      let parsed = 0;
+      for (const url of eventLinks) {
+        try {
+          const event = await this.parseWestwordEventPage(url);
+          if (event) { results.push(event); parsed++; }
+        } catch {
+          // per-page errors are non-fatal
+        }
+        await new Promise(r => setTimeout(r, 400)); // polite crawling delay
+      }
+      console.log(`Westword events: parsed ${parsed}/${eventLinks.length}`);
+    } catch (err) {
+      console.error('Westword: error in events calendar scrape:', err);
     }
+
+    // Part 2: recent Food & Drink RSS items
+    try {
+      const foodItems = await this.fetchWestwordFoodRSS();
+      results.push(...foodItems);
+      console.log(`Westword RSS food/drink: ${foodItems.length} items`);
+    } catch (err) {
+      console.error('Westword: error in RSS food scrape:', err);
+    }
+
+    console.log(`Westword: total ${results.length} items`);
+    return results;
+  }
+
+  /** Fetches the /things-to-do listing page and returns unique event page URLs. */
+  private async fetchWestwordEventLinks(): Promise<string[]> {
+    const resp = await axios.get('https://www.westword.com/things-to-do', {
+      headers: this.WESTWORD_HEADERS,
+      timeout: 15000,
+    });
+
+    const $ = cheerio.load(resp.data);
+    const links = new Set<string>();
+
+    $('a[href*="/event/"]').each((_, el) => {
+      const href = $(el).attr('href');
+      if (!href) return;
+      const full = href.startsWith('http') ? href : `https://www.westword.com${href}`;
+      if (!full.includes('westword.com')) return;
+      links.add(full.split('?')[0]); // strip query params
+    });
+
+    return [...links].slice(0, 40); // cap per run to avoid overloading
+  }
+
+  /**
+   * Fetches a single Westword event page and extracts the Schema.org
+   * Event JSON-LD block. Returns null if no structured data is found.
+   * Only fields present in the JSON-LD are used — no inference.
+   */
+  private async parseWestwordEventPage(url: string): Promise<RawEvent | null> {
+    const resp = await axios.get(url, {
+      headers: this.WESTWORD_HEADERS,
+      timeout: 10000,
+    });
+
+    const $ = cheerio.load(resp.data);
+
+    // Find Schema.org Event JSON-LD
+    let jsonLd: any = null;
+    $('script[type="application/ld+json"]').each((_, el) => {
+      if (jsonLd) return; // already found one
+      try {
+        const raw = JSON.parse($(el).text());
+        const candidates = Array.isArray(raw) ? raw : [raw];
+        for (const c of candidates) {
+          const types = Array.isArray(c['@type']) ? c['@type'] : [c['@type']];
+          if (types.includes('Event')) { jsonLd = c; break; }
+        }
+      } catch { /* malformed JSON-LD — skip */ }
+    });
+
+    if (!jsonLd) return null;
+
+    // ── Required fields ──
+    const title = typeof jsonLd.name === 'string' ? jsonLd.name.trim() : null;
+    if (!title) return null;
+
+    const startDate = jsonLd.startDate ? new Date(jsonLd.startDate) : null;
+    if (!startDate || isNaN(startDate.getTime())) return null;
+
+    const endDate = jsonLd.endDate ? new Date(jsonLd.endDate) : null;
+
+    // ── Location — only use what's in the structured data ──
+    const locationData = jsonLd.location;
+    const venueName = (locationData?.name ?? '').trim();
+    const addrObj = locationData?.address;
+    let streetAddress = '';
+    if (typeof addrObj === 'string') {
+      streetAddress = addrObj;
+    } else if (addrObj && typeof addrObj === 'object') {
+      streetAddress = [
+        addrObj.streetAddress,
+        addrObj.addressLocality,
+        addrObj.addressRegion,
+        addrObj.postalCode,
+      ].filter(Boolean).join(', ');
+    }
+
+    // Geocode only when we have a real street address
+    let coords: [number, number] = [DENVER.center.lng, DENVER.center.lat];
+    if (streetAddress && !/^Denver,?\s*(CO)?$/i.test(streetAddress)) {
+      const geocoded = await geocodingService.getCoordinates(streetAddress) as [number, number] | null;
+      if (geocoded) coords = geocoded;
+    }
+
+    // ── Price — from offers object/array ──
+    let minPrice = 0;
+    let maxPrice = 0;
+    const offers = jsonLd.offers;
+    if (offers) {
+      const arr: any[] = Array.isArray(offers) ? offers : [offers];
+      const lowPrices = arr.map(o => parseFloat(o.price ?? o.lowPrice ?? 'NaN')).filter(p => !isNaN(p) && p >= 0);
+      const highPrices = arr.map(o => parseFloat(o.highPrice ?? 'NaN')).filter(p => !isNaN(p) && p > 0);
+      if (lowPrices.length) minPrice = Math.min(...lowPrices);
+      maxPrice = highPrices.length ? Math.max(...highPrices) : (lowPrices.length ? Math.max(...lowPrices) : 0);
+    }
+
+    // ── Description — strip any HTML tags ──
+    const description = (jsonLd.description ?? '').replace(/<[^>]+>/g, '').trim();
+
+    // ── Event type — classified only from title/description text ──
+    const lower = (title + ' ' + description).toLowerCase();
+    let type: EventType = 'social';
+    if (/concert|live music|live band|perform/i.test(lower)) type = 'concert';
+    else if (/comedy|stand.?up/i.test(lower)) type = 'comedy';
+    else if (/\bart\b|gallery|exhibit/i.test(lower)) type = 'art';
+    else if (/film|movie|cinema|screening/i.test(lower)) type = 'film';
+    else if (/market|festival|fest\b/i.test(lower)) type = 'festival';
+    else if (/trivia/i.test(lower)) type = 'trivia';
+    else if (/class|workshop/i.test(lower)) type = 'class';
+    else if (/happy hour/i.test(lower)) type = 'bar';
+
+    const tags: string[] = [type, 'westword'];
+    if (minPrice === 0 && maxPrice === 0) tags.push('free');
+    if (/outdoor|outside|patio|park/i.test(lower)) tags.push('outdoor');
+    if (/food|eat|dine|dinner|lunch/i.test(lower)) tags.push('food');
+    if (/beer|brew/i.test(lower)) tags.push('craft_beer');
+    if (/wine/i.test(lower)) tags.push('wine');
+    if (/cocktail/i.test(lower)) tags.push('cocktails');
+
+    const imageUrl = typeof jsonLd.image === 'string'
+      ? jsonLd.image
+      : Array.isArray(jsonLd.image)
+      ? jsonLd.image[0]?.url ?? jsonLd.image[0]
+      : jsonLd.image?.url;
+
+    return {
+      title,
+      description,
+      sourceUrl: url,
+      source: 'westword',
+      type,
+      price: { min: minPrice, max: maxPrice },
+      location: {
+        type: 'Point',
+        coordinates: coords,
+        address: streetAddress || 'Denver, CO',
+      },
+      datetime: {
+        start: startDate,
+        end: endDate ?? new Date(startDate.getTime() + 2 * 3600000),
+      },
+      recurring: false,
+      tags,
+      city: 'denver',
+      venueName: venueName || undefined,
+      imageUrl: typeof imageUrl === 'string' ? imageUrl : undefined,
+    };
+  }
+
+  /**
+   * Fetches Westword's main RSS feed and returns Food & Drink items
+   * published within the last 30 days. Address fields are not available
+   * from RSS, so location defaults to Denver center.
+   */
+  private async fetchWestwordFoodRSS(): Promise<RawEvent[]> {
+    const results: RawEvent[] = [];
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+    const resp = await axios.get('https://www.westword.com/feed/', {
+      headers: this.WESTWORD_HEADERS,
+      timeout: 10000,
+    });
+
+    const $ = cheerio.load(resp.data, { xmlMode: true });
+
+    $('item').each((_, el) => {
+      // Only food/drink/restaurant editorial coverage
+      const categories = $(el).find('category').map((__, c) => $(c).text().toLowerCase()).get();
+      const isFood = categories.some(c => c.includes('food') || c.includes('drink') || c.includes('restaurant'));
+      if (!isFood) return;
+
+      const title = $(el).find('title').text().trim();
+      const link = $(el).find('link').text().trim() || $(el).find('guid').text().trim();
+      const description = $(el).find('description').text().replace(/<[^>]+>/g, '').trim().slice(0, 600);
+      const pubDateStr = $(el).find('pubDate').text().trim();
+      const pubDate = pubDateStr ? new Date(pubDateStr) : null;
+
+      if (!title || !link || !pubDate || isNaN(pubDate.getTime())) return;
+      if (pubDate < thirtyDaysAgo) return; // only recent coverage
+
+      const lower = (title + ' ' + description).toLowerCase();
+      let type: EventType = 'social';
+      if (/happy hour/i.test(lower)) type = 'bar';
+      else if (/concert|live music/i.test(lower)) type = 'concert';
+      else if (/festival|market/i.test(lower)) type = 'festival';
+
+      const tags: string[] = ['westword', 'food'];
+      if (type === 'bar') tags.push('happy_hour');
+      if (/free/i.test(lower)) tags.push('free');
+      if (/outdoor|patio/i.test(lower)) tags.push('outdoor');
+
+      // Use publication date as the reference date for the item
+      const start = new Date(pubDate);
+      start.setHours(18, 0, 0, 0);
+      const end = new Date(pubDate);
+      end.setHours(22, 0, 0, 0);
+
+      results.push({
+        title,
+        description,
+        sourceUrl: link,
+        source: 'westword',
+        type,
+        price: { min: 0, max: 30 },
+        location: {
+          type: 'Point',
+          coordinates: [DENVER.center.lng, DENVER.center.lat],
+          address: 'Denver, CO',
+        },
+        datetime: { start, end },
+        recurring: false,
+        tags,
+        city: 'denver',
+      });
+    });
 
     return results;
   }
