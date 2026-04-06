@@ -272,6 +272,9 @@ export class Scraper {
     'Accept-Language': 'en-US,en;q=0.9',
   };
 
+  // Cache venue addresses within a scrape run so we don't re-fetch the same location page
+  private venueAddressCache = new Map<string, string>();
+
   /**
    * Scrapes Westword Denver for events and food/drink coverage.
    *
@@ -343,9 +346,17 @@ export class Scraper {
   }
 
   /**
-   * Fetches a single Westword event page and extracts the Schema.org
-   * Event JSON-LD block. Returns null if no structured data is found.
-   * Only fields present in the JSON-LD are used — no inference.
+   * Fetches a single Westword event page and extracts event details from HTML.
+   * Westword does not use Schema.org Event JSON-LD; data lives in the HTML.
+   *
+   * Selectors confirmed against live pages:
+   *   - .event-title       → event name
+   *   - .event-occurrence  → "Sun., Apr 5, 1:00 pm"
+   *   - .event-meta-data a[href*="/location/"] → venue name + location page URL
+   *   - .location-address  → street address (fetched from venue page)
+   *   - .ticket-price      → price text ("Free", "$25", "TBA", etc.)
+   *   - .event-content     → description
+   *   - og:image meta      → event image
    */
   private async parseWestwordEventPage(url: string): Promise<RawEvent | null> {
     const resp = await axios.get(url, {
@@ -355,98 +366,95 @@ export class Scraper {
 
     const $ = cheerio.load(resp.data);
 
-    // Find Schema.org Event JSON-LD
-    let jsonLd: any = null;
-    $('script[type="application/ld+json"]').each((_, el) => {
-      if (jsonLd) return; // already found one
-      try {
-        const raw = JSON.parse($(el).text());
-        const candidates = Array.isArray(raw) ? raw : [raw];
-        for (const c of candidates) {
-          const types = Array.isArray(c['@type']) ? c['@type'] : [c['@type']];
-          if (types.includes('Event')) { jsonLd = c; break; }
-        }
-      } catch { /* malformed JSON-LD — skip */ }
-    });
-
-    if (!jsonLd) return null;
-
-    // ── Required fields ──
-    const title = typeof jsonLd.name === 'string' ? jsonLd.name.trim() : null;
+    // ── Required: title ──
+    const title = $('.event-title').first().text().trim();
     if (!title) return null;
 
-    const startDate = jsonLd.startDate ? new Date(jsonLd.startDate) : null;
-    if (!startDate || isNaN(startDate.getTime())) return null;
+    // ── Required: start date/time ──
+    const occurrenceText = $('.event-occurrence').first().text().trim();
+    const startDate = this.parseWestwordDate(occurrenceText);
+    if (!startDate) return null;
 
-    const endDate = jsonLd.endDate ? new Date(jsonLd.endDate) : null;
+    // ── Venue name and location page URL ──
+    const venueLink = $('.event-meta-data a[href*="/location/"]').first();
+    const venueName = venueLink.text().trim();
+    const venuePageUrl = venueLink.attr('href');
 
-    // ── Location — only use what's in the structured data ──
-    const locationData = jsonLd.location;
-    const venueName = (locationData?.name ?? '').trim();
-    const addrObj = locationData?.address;
+    // ── Address — fetch venue page (cached) ──
     let streetAddress = '';
-    if (typeof addrObj === 'string') {
-      streetAddress = addrObj;
-    } else if (addrObj && typeof addrObj === 'object') {
-      streetAddress = [
-        addrObj.streetAddress,
-        addrObj.addressLocality,
-        addrObj.addressRegion,
-        addrObj.postalCode,
-      ].filter(Boolean).join(', ');
+    if (venuePageUrl) {
+      const fullVenueUrl = venuePageUrl.startsWith('http')
+        ? venuePageUrl
+        : `https://www.westword.com${venuePageUrl}`;
+      streetAddress = await this.fetchWestwordVenueAddress(fullVenueUrl);
     }
+    // Append Denver, CO if the address doesn't already include it
+    const geocodeQuery = streetAddress
+      ? (streetAddress.toLowerCase().includes('denver') ? streetAddress : `${streetAddress}, Denver, CO`)
+      : (venueName ? `${venueName}, Denver, CO` : '');
 
-    // Geocode only when we have a real street address
     let coords: [number, number] = [DENVER.center.lng, DENVER.center.lat];
-    if (streetAddress && !/^Denver,?\s*(CO)?$/i.test(streetAddress)) {
-      const geocoded = await geocodingService.getCoordinates(streetAddress) as [number, number] | null;
+    if (geocodeQuery) {
+      const geocoded = await geocodingService.getCoordinates(geocodeQuery) as [number, number] | null;
       if (geocoded) coords = geocoded;
     }
 
-    // ── Price — from offers object/array ──
+    // ── Price ──
     let minPrice = 0;
     let maxPrice = 0;
-    const offers = jsonLd.offers;
-    if (offers) {
-      const arr: any[] = Array.isArray(offers) ? offers : [offers];
-      const lowPrices = arr.map(o => parseFloat(o.price ?? o.lowPrice ?? 'NaN')).filter(p => !isNaN(p) && p >= 0);
-      const highPrices = arr.map(o => parseFloat(o.highPrice ?? 'NaN')).filter(p => !isNaN(p) && p > 0);
-      if (lowPrices.length) minPrice = Math.min(...lowPrices);
-      maxPrice = highPrices.length ? Math.max(...highPrices) : (lowPrices.length ? Math.max(...lowPrices) : 0);
+    let priceKnown = false; // false = TBA/unknown; true = explicitly stated
+    const ticketText = $('.ticket-price').first().text().trim();
+    const ticketLower = ticketText.toLowerCase();
+    if (ticketText && ticketLower !== 'tba' && ticketLower !== '') {
+      priceKnown = true;
+      if (ticketLower === 'free') {
+        minPrice = 0; maxPrice = 0;
+      } else {
+        const priceMatches = ticketText.match(/\$(\d+(?:\.\d{2})?)/g);
+        if (priceMatches) {
+          const prices = priceMatches.map(p => parseFloat(p.slice(1)));
+          minPrice = Math.min(...prices);
+          maxPrice = Math.max(...prices);
+        }
+      }
     }
 
-    // ── Description — strip any HTML tags ──
-    const description = (jsonLd.description ?? '').replace(/<[^>]+>/g, '').trim();
+    // ── Description ──
+    const description = $('.event-content').first().text().replace(/\s+/g, ' ').trim();
 
-    // ── Event type — classified only from title/description text ──
-    const lower = (title + ' ' + description).toLowerCase();
+    // ── Image — prefer og:image ──
+    const imageUrl = $('meta[property="og:image"]').attr('content') ?? undefined;
+
+    // ── Event type classification ──
+    // Include page title for category hints (e.g., "Calendar, Theater") but
+    // use only title + description for tag classification to avoid false matches
+    const pageTitle = $('title').text();
+    const lowerFull = (title + ' ' + description + ' ' + pageTitle).toLowerCase();
+    const lowerContent = (title + ' ' + description).toLowerCase();
+
     let type: EventType = 'social';
-    if (/concert|live music|live band|perform/i.test(lower)) type = 'concert';
-    else if (/comedy|stand.?up/i.test(lower)) type = 'comedy';
-    else if (/\bart\b|gallery|exhibit/i.test(lower)) type = 'art';
-    else if (/film|movie|cinema|screening/i.test(lower)) type = 'film';
-    else if (/market|festival|fest\b/i.test(lower)) type = 'festival';
-    else if (/trivia/i.test(lower)) type = 'trivia';
-    else if (/class|workshop/i.test(lower)) type = 'class';
-    else if (/happy hour/i.test(lower)) type = 'bar';
+    if (/concert|live music|live band|perform/i.test(lowerFull)) type = 'concert';
+    else if (/comedy|stand.?up/i.test(lowerFull)) type = 'comedy';
+    else if (/\bart\b|gallery|exhibit/i.test(lowerFull)) type = 'art';
+    else if (/film|movie|cinema|screening/i.test(lowerFull)) type = 'film';
+    else if (/market|festival|fest\b/i.test(lowerFull)) type = 'festival';
+    else if (/trivia/i.test(lowerFull)) type = 'trivia';
+    else if (/class|workshop/i.test(lowerFull)) type = 'class';
+    else if (/happy hour/i.test(lowerFull)) type = 'bar';
+    else if (/theater|theatre|opera|ballet|musical/i.test(lowerFull)) type = 'concert';
+    else if (/baseball|football|basketball|hockey|soccer|sports/i.test(lowerFull)) type = 'sports';
 
     const tags: string[] = [type, 'westword'];
-    if (minPrice === 0 && maxPrice === 0) tags.push('free');
-    if (/outdoor|outside|patio|park/i.test(lower)) tags.push('outdoor');
-    if (/food|eat|dine|dinner|lunch/i.test(lower)) tags.push('food');
-    if (/beer|brew/i.test(lower)) tags.push('craft_beer');
-    if (/wine/i.test(lower)) tags.push('wine');
-    if (/cocktail/i.test(lower)) tags.push('cocktails');
-
-    const imageUrl = typeof jsonLd.image === 'string'
-      ? jsonLd.image
-      : Array.isArray(jsonLd.image)
-      ? jsonLd.image[0]?.url ?? jsonLd.image[0]
-      : jsonLd.image?.url;
+    if (priceKnown && minPrice === 0 && maxPrice === 0) tags.push('free'); // only tag free when price is explicitly known
+    if (/outdoor|outside|patio|park/i.test(lowerContent)) tags.push('outdoor');
+    if (/\bfood\b|eat|dine|dinner|lunch/i.test(lowerContent)) tags.push('food');
+    if (/beer|brew/i.test(lowerContent)) tags.push('craft_beer');
+    if (/wine/i.test(lowerContent)) tags.push('wine');
+    if (/cocktail/i.test(lowerContent)) tags.push('cocktails');
 
     return {
       title,
-      description,
+      description: description || '',
       sourceUrl: url,
       source: 'westword',
       type,
@@ -454,18 +462,83 @@ export class Scraper {
       location: {
         type: 'Point',
         coordinates: coords,
-        address: streetAddress || 'Denver, CO',
+        address: geocodeQuery || 'Denver, CO',
       },
       datetime: {
         start: startDate,
-        end: endDate ?? new Date(startDate.getTime() + 2 * 3600000),
+        end: new Date(startDate.getTime() + 2 * 3600000), // default +2hr
       },
       recurring: false,
       tags,
       city: 'denver',
       venueName: venueName || undefined,
-      imageUrl: typeof imageUrl === 'string' ? imageUrl : undefined,
+      imageUrl,
     };
+  }
+
+  /**
+   * Fetches a Westword venue/location page and returns the street address
+   * from `.location-address`. Results are cached within the scrape run.
+   */
+  private async fetchWestwordVenueAddress(venueUrl: string): Promise<string> {
+    if (this.venueAddressCache.has(venueUrl)) {
+      return this.venueAddressCache.get(venueUrl)!;
+    }
+
+    try {
+      await new Promise(r => setTimeout(r, 300)); // polite delay
+      const resp = await axios.get(venueUrl, { headers: this.WESTWORD_HEADERS, timeout: 8000 });
+      const $ = cheerio.load(resp.data);
+      const address = $('.location-address').first().text().trim();
+      this.venueAddressCache.set(venueUrl, address);
+      return address;
+    } catch {
+      this.venueAddressCache.set(venueUrl, '');
+      return '';
+    }
+  }
+
+  /**
+   * Parses Westword's date/time format into a Date.
+   * Input examples: "Sun., Apr 5, 1:00 pm", "Apr 5, 7:30 pm"
+   */
+  private parseWestwordDate(text: string): Date | null {
+    if (!text) return null;
+
+    // Strip leading weekday abbreviation: "Sun., " → ""
+    const stripped = text.replace(/^(sun|mon|tue|wed|thu|fri|sat)\w*\.?,?\s*/i, '').trim();
+
+    const MONTHS: Record<string, number> = {
+      jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+      jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
+    };
+
+    // Match "Apr 5, 2026, 1:00 pm" or "Apr 5, 1:00 pm"
+    const m = stripped.match(/^(\w{3,9})\s+(\d{1,2})(?:,\s*(\d{4}))?,?\s+(\d{1,2}):(\d{2})\s*(am|pm)/i);
+    if (!m) return null;
+
+    const [, monthStr, dayStr, yearStr, hourStr, minStr, ampm] = m;
+    const monthIdx = MONTHS[monthStr.slice(0, 3).toLowerCase()];
+    if (monthIdx === undefined) return null;
+
+    const now = new Date();
+    let year = yearStr ? parseInt(yearStr, 10) : now.getFullYear();
+    const day = parseInt(dayStr, 10);
+    let hour = parseInt(hourStr, 10);
+    const min = parseInt(minStr, 10);
+
+    if (ampm.toLowerCase() === 'pm' && hour !== 12) hour += 12;
+    if (ampm.toLowerCase() === 'am' && hour === 12) hour = 0;
+
+    const date = new Date(year, monthIdx, day, hour, min, 0);
+
+    // If no year was given and date is in the past (>1 day ago), assume next year
+    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    if (!yearStr && date < yesterday) {
+      return new Date(year + 1, monthIdx, day, hour, min, 0);
+    }
+
+    return date;
   }
 
   /**
