@@ -332,12 +332,15 @@ input::placeholder { color: var(--muted); }
   letter-spacing: -0.03em;
 }
 
-.nav-links { display: flex; gap: 1.25rem; }
+.nav-links { display: flex; gap: 0; }
 
 .nav-links a {
   color: var(--muted);
   font-size: 0.82rem;
+  padding: 0 1.25rem;
 }
+
+.nav-links a + a { border-left: 1px solid var(--border); }
 
 .nav-links a:hover { color: var(--text); text-decoration: none; }
 
