@@ -15,6 +15,7 @@
   <a href="/" class="nav-logo">kno</a>
   <div class="nav-links">
     <a href="/proposals">My proposals</a>
+    <a href="/submit">Submit a find</a>
     <a href="/settings">Settings</a>
     <a href="/auth/logout" onclick="localStorage.removeItem('kno_user_id')">Sign out</a>
   </div>
@@ -108,7 +109,21 @@
       const venueLine = ev.venue_name ? ev.venue_name : '';
 
       const passBtn = p.user_response === 'pending'
-        ? `<button class="pass-btn" onclick="passProposal(${p.id}, this)">Pass on this</button>`
+        ? `<button class="pass-btn" onclick="showPassPanel(${p.id}, this)">Pass on this</button>
+           <div class="pass-panel" id="pass-panel-${p.id}" style="display:none">
+             <p style="font-size:0.82rem;color:var(--muted);margin-bottom:0.5rem">Why are you passing?</p>
+             <div class="chip-grid" id="pass-reasons-${p.id}">
+               <span class="chip" data-val="not_my_vibe">Not my vibe</span>
+               <span class="chip" data-val="too_far">Too far</span>
+               <span class="chip" data-val="wrong_time">Wrong time</span>
+               <span class="chip" data-val="already_going">Already going</span>
+             </div>
+             <input type="text" id="pass-hint-${p.id}" placeholder="What would you prefer instead? (optional)" style="margin-top:0.5rem;width:100%;box-sizing:border-box" />
+             <div style="display:flex;gap:0.75rem;align-items:center;margin-top:0.6rem">
+               <button class="btn btn-primary" style="padding:0.4rem 1rem;font-size:0.85rem" onclick="confirmPass(${p.id})">Pass</button>
+               <button class="btn btn-secondary" style="padding:0.4rem 1rem;font-size:0.85rem" onclick="hidePassPanel(${p.id})">Cancel</button>
+             </div>
+           </div>`
         : '';
 
       return `
@@ -142,21 +157,61 @@
   }
 })();
 
-async function passProposal(recommendationId, btn) {
-  if (!confirm('Pass on this suggestion?')) return;
-  btn.textContent = 'Passing…';
-  btn.disabled = true;
+function showPassPanel(id, btn) {
+  btn.style.display = 'none';
+  const panel = document.getElementById(`pass-panel-${id}`);
+  if (panel) {
+    panel.style.display = 'block';
+    // Wire up reason chips (single-select)
+    panel.querySelectorAll('.chip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        panel.querySelectorAll('.chip').forEach(c => c.classList.remove('selected'));
+        chip.classList.toggle('selected');
+      });
+    });
+  }
+}
+
+function hidePassPanel(id) {
+  const panel = document.getElementById(`pass-panel-${id}`);
+  if (panel) panel.style.display = 'none';
+  const passBtn = document.querySelector(`#proposal-${id} .pass-btn`);
+  if (passBtn) passBtn.style.display = '';
+}
+
+async function confirmPass(id) {
+  const panel = document.getElementById(`pass-panel-${id}`);
+  const reason = panel?.querySelector('.chip.selected')?.dataset?.val ?? null;
+  const hint = document.getElementById(`pass-hint-${id}`)?.value?.trim() ?? '';
+
+  const confirmBtn = panel?.querySelector('.btn-primary');
+  if (confirmBtn) { confirmBtn.textContent = 'Passing…'; confirmBtn.disabled = true; }
+
   try {
-    const res = await fetch(`/api/proposals/${recommendationId}/pass`, { method: 'POST' });
+    const res = await fetch(`/api/proposals/${id}/pass`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason, re_search_hint: hint || null }),
+    });
     if (!res.ok) throw new Error();
-    const card = document.getElementById(`proposal-${recommendationId}`);
+
+    const card = document.getElementById(`proposal-${id}`);
     card.classList.remove('pending');
     card.classList.add('deleted');
     card.querySelector('.badge').outerHTML = '<span class="badge badge-deleted">Passed</span>';
-    btn.remove();
+    // Remove the pass button + panel
+    card.querySelector('.pass-btn')?.remove();
+    panel?.remove();
+
+    if (hint) {
+      const note = document.createElement('p');
+      note.className = 'text-sm text-muted';
+      note.style.marginTop = '0.4rem';
+      note.textContent = 'kno will look for something more like that.';
+      card.appendChild(note);
+    }
   } catch {
-    btn.textContent = 'Pass on this';
-    btn.disabled = false;
+    if (confirmBtn) { confirmBtn.textContent = 'Pass'; confirmBtn.disabled = false; }
   }
 }
 </script>

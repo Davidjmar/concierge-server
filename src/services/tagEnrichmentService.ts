@@ -25,7 +25,7 @@ export const VALID_TAGS = [
   // Activity level
   'active', 'low_key',
   // Special
-  'seasonal', 'recurring', 'new', 'local',
+  'seasonal', 'recurring', 'new', 'local', 'grand_opening', 'free_food',
 ];
 
 const SYSTEM_PROMPT = `You are a Denver event tagger. Given an event's title, description, and venue name, return a JSON array of relevant tags from the approved list only.

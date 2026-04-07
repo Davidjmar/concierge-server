@@ -1,4 +1,6 @@
 import express, { Request, Response } from 'express';
+import multer from 'multer';
+import Anthropic from '@anthropic-ai/sdk';
 import User from '../models/user.js';
 import Event from '../models/event.js';
 import UserEventRecommendation from '../models/userEventRecommendation.js';
@@ -6,6 +8,8 @@ import geocodingService from '../services/geocodingService.js';
 import recommendationEngine from '../services/recommendationEngine.js';
 import { requireAuth, requireDebugSecret } from '../middleware/auth.js';
 import { UserPreferencesV2, GeoPoint } from '../types/index.js';
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
 const router = express.Router();
 
@@ -141,8 +145,106 @@ router.post('/proposals/:id/pass', requireAuth, async (req: Request, res: Respon
     });
     if (!rec) return res.status(404).json({ error: 'Proposal not found' });
 
-    await rec.update({ user_response: 'deleted', response_detected_at: new Date() });
+    const { reason, re_search_hint } = req.body ?? {};
+    const hasHint = typeof re_search_hint === 'string' && re_search_hint.trim().length > 0;
+
+    await rec.update({
+      user_response: 'deleted',
+      response_detected_at: new Date(),
+      pass_reason: reason ?? null,
+      re_search_hint: hasHint ? re_search_hint.trim() : null,
+      needs_replacement: hasHint,
+    });
     res.json({ ok: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message ?? 'Unknown error' });
+  }
+});
+
+// ─── Photo submission ─────────────────────────────────────────────────────────
+
+router.post('/submit/photo', requireAuth, upload.single('photo'), async (req: Request, res: Response) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No photo uploaded' });
+
+    if (!process.env.ANTHROPIC_API_KEY) {
+      return res.status(503).json({ error: 'AI extraction not available' });
+    }
+
+    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const base64 = req.file.buffer.toString('base64');
+    const mediaType = (req.file.mimetype as any) || 'image/jpeg';
+
+    const msg = await client.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 512,
+      messages: [{
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: { type: 'base64', media_type: mediaType, data: base64 },
+          },
+          {
+            type: 'text',
+            text: 'Extract any event, special, or happy hour details from this image. Return ONLY a JSON object with these fields (use null for anything not visible): { "title": string, "venue_name": string, "description": string, "date_hint": string, "time_hint": string, "price_hint": string, "address_hint": string, "tags": string[] }. For tags use simple lowercase words like: happy_hour, free, concert, food, drinks, live_music, grand_opening, etc.',
+          },
+        ],
+      }],
+    });
+
+    const text = (msg.content[0] as any)?.text ?? '';
+    let extracted: Record<string, any> = {};
+    try {
+      const match = text.match(/\{[\s\S]*\}/);
+      if (match) extracted = JSON.parse(match[0]);
+    } catch { /* return raw text if parse fails */ }
+
+    res.json({ ok: true, extracted, raw: text });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message ?? 'Unknown error' });
+  }
+});
+
+router.post('/submit/confirm', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { title, venue_name, description, date_hint, time_hint, price_hint, address_hint, tags } = req.body;
+    if (!title) return res.status(400).json({ error: 'title is required' });
+
+    // Parse a rough datetime from the hints (default to 1 week from now if unparseable)
+    let startDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    if (date_hint || time_hint) {
+      const parsed = new Date(`${date_hint ?? ''} ${time_hint ?? ''}`.trim());
+      if (!isNaN(parsed.getTime())) startDate = parsed;
+    }
+    const endDate = new Date(startDate.getTime() + 2 * 60 * 60 * 1000);
+
+    // Parse price hint
+    let price: { min?: number; max?: number } = {};
+    if (price_hint) {
+      const match = price_hint.match(/(\d+)/g);
+      if (match) {
+        price = { min: parseInt(match[0], 10), max: match[1] ? parseInt(match[1], 10) : parseInt(match[0], 10) };
+      }
+    }
+
+    const event = await Event.create({
+      title: title.trim(),
+      description: description ?? null,
+      source: 'manual',
+      source_url: null,
+      type: 'social',
+      price,
+      location: { type: 'Point', coordinates: [-104.9847, 39.7392], address: address_hint ?? null },
+      datetime: { start: startDate, end: endDate },
+      is_active: true,
+      recurring: false,
+      city: 'denver',
+      venue_name: venue_name ?? null,
+      tags: Array.isArray(tags) ? tags : [],
+    } as any);
+
+    res.json({ ok: true, event_id: event.id });
   } catch (error: any) {
     res.status(500).json({ error: error?.message ?? 'Unknown error' });
   }

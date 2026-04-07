@@ -40,6 +40,7 @@
   <a href="/" class="nav-logo">kno</a>
   <div class="nav-links">
     <a href="/proposals">My proposals</a>
+    <a href="/submit">Submit a find</a>
     <a href="/settings" style="color:var(--text)">Settings</a>
     <a href="/auth/logout" onclick="localStorage.removeItem('kno_user_id')">Sign out</a>
   </div>
@@ -165,6 +166,20 @@
       </div>
     </div>
 
+    <!-- ── Custom Interests ── -->
+    <div class="settings-section">
+      <p class="settings-section-header">Anything specific?</p>
+      <div class="card">
+        <label for="custom-interests">Things you want kno to find for you</label>
+        <textarea id="custom-interests" rows="3" placeholder="e.g. coworking spots with lunch deals, EDM shows, grand openings, free food events" style="width:100%;box-sizing:border-box;resize:vertical;font-family:inherit;font-size:0.9rem;padding:0.5rem;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text)"></textarea>
+        <p class="text-sm text-muted" style="margin-top:0.4rem">One interest per line or comma-separated. kno uses these as extra scoring hints.</p>
+        <div class="save-row">
+          <button class="btn btn-primary" onclick="saveCustomInterests()">Save</button>
+          <span class="save-status" id="status-interests"></span>
+        </div>
+      </div>
+    </div>
+
     <!-- ── Schedule ── -->
     <div class="settings-section">
       <p class="settings-section-header">Schedule</p>
@@ -255,6 +270,10 @@ function populate(data) {
 
   // Days chips
   selectChips('chips-days', data.schedule?.days ?? []);
+
+  // Custom interests
+  const interests = prefs.custom_interests ?? [];
+  document.getElementById('custom-interests').value = interests.join('\n');
 
   // Wire up interactivity now that values are set
   wireChips();
@@ -363,6 +382,32 @@ async function saveTastes() {
     showStatus('status-tastes', 'success', 'Saved');
   } catch {
     showStatus('status-tastes', 'error', 'Failed to save');
+  }
+}
+
+async function saveCustomInterests() {
+  const raw = document.getElementById('custom-interests').value.trim();
+  const interests = raw
+    ? raw.split(/[\n,]+/).map(s => s.trim()).filter(Boolean)
+    : [];
+
+  // We need to merge with existing preferences, so fetch first
+  try {
+    const settingsRes = await fetch('/api/settings');
+    if (!settingsRes.ok) throw new Error();
+    const data = await settingsRes.json();
+    const existing = data.preferences ?? {};
+    const merged = { ...existing, custom_interests: interests };
+
+    const res = await fetch('/api/onboarding/preferences', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ preferences: merged }),
+    });
+    if (!res.ok) throw new Error();
+    showStatus('status-interests', 'success', 'Saved');
+  } catch {
+    showStatus('status-interests', 'error', 'Failed to save');
   }
 }
 

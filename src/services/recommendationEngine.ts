@@ -96,14 +96,6 @@ class RecommendationEngine {
     for (const user of users) {
       try {
         if (!this.userMatchesSchedule(user, todayName)) continue;
-
-        // All frequencies: only run once per UTC day
-        const alreadyRan = await this.userAlreadyRanToday(user.id);
-        if (alreadyRan) {
-          console.log(`[RecommendationEngine] User ${user.id}: already proposed today — skipping`);
-          continue;
-        }
-
         console.log(`[RecommendationEngine] Running for user ${user.id} (${user.email})`);
         await this.runForUser(user);
       } catch (err) {
@@ -157,18 +149,44 @@ class RecommendationEngine {
       return;
     }
 
+    // Check if user has a pending needs_replacement request (from a passed proposal with a hint)
+    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const replacementNeeded = await UserEventRecommendation.findOne({
+      where: {
+        user_id: user.id,
+        needs_replacement: true,
+        user_response: 'deleted',
+        response_detected_at: { [Op.gte]: twentyFourHoursAgo },
+      },
+      order: [['response_detected_at', 'DESC']],
+    });
+
     // max_proposals_per_run is a weekly budget — check how many already sent this week
     const weeklyLimit = user.max_proposals_per_run ?? 3;
     const alreadySentThisWeek = await this.proposalsThisWeek(user.id);
     const remainingThisWeek = weeklyLimit - alreadySentThisWeek;
 
-    if (remainingThisWeek <= 0) {
+    if (remainingThisWeek <= 0 && !replacementNeeded) {
       console.log(`User ${user.id}: weekly proposal limit (${weeklyLimit}) reached — skipping`);
       return;
     }
 
-    // Hard cap of 1 per daily run so proposals are spread across the week
-    const proposalsThisRun = Math.min(remainingThisWeek, 1);
+    // Hard cap of 1 per daily run; bypass once-per-day guard if replacement is needed
+    const alreadyRanToday = await this.userAlreadyRanToday(user.id);
+    if (alreadyRanToday && !replacementNeeded) {
+      console.log(`User ${user.id}: already ran today and no replacement needed — skipping`);
+      return;
+    }
+
+    const proposalsThisRun = replacementNeeded ? 1 : Math.min(remainingThisWeek, 1);
+
+    // Pass the re_search_hint (if any) to the scoring pipeline
+    const reSearchHint = replacementNeeded?.re_search_hint ?? null;
+    if (reSearchHint) {
+      console.log(`User ${user.id}: replacement run — hint: "${reSearchHint}"`);
+      // Clear the flag so it doesn't keep triggering
+      await replacementNeeded!.update({ needs_replacement: false });
+    }
     const proposals: { event: Event; score: number }[] = [];
 
     // Find calendar days that already have a pending kno proposal — don't double-book a day
@@ -190,7 +208,7 @@ class RecommendationEngine {
         console.log(`User ${user.id}: ${windowDay} already has a pending proposal — skipping window`);
         continue;
       }
-      const candidates = await this.getCandidatesForWindow(user, window, proposals.map(p => p.event.id));
+      const candidates = await this.getCandidatesForWindow(user, window, proposals.map(p => p.event.id), reSearchHint);
       proposals.push(...candidates.slice(0, proposalsThisRun - proposals.length));
     }
 
@@ -236,7 +254,8 @@ class RecommendationEngine {
   private async getCandidatesForWindow(
     user: User,
     window: { start: Date; end: Date; isWeekend: boolean },
-    alreadyProposedIds: number[]
+    alreadyProposedIds: number[],
+    reSearchHint: string | null = null
   ): Promise<{ event: Event; score: number }[]> {
 
     const prefs = (user.preferences as UserPreferencesV2) ?? {};
@@ -455,6 +474,23 @@ class RecommendationEngine {
           if (daysSince < 7) score -= 0.5;
           else if (daysSince < 21) score -= 0.3;
         }
+      }
+
+      // Boost: custom interest keyword matching
+      const customInterests: string[] = (prefs as any).custom_interests ?? [];
+      if (customInterests.length > 0) {
+        const eventText = `${event.title} ${event.description ?? ''} ${(event as any).venue_name ?? ''}`.toLowerCase();
+        for (const interest of customInterests) {
+          const keywords = interest.toLowerCase().split(/[\s,]+/).filter(k => k.length > 2);
+          if (keywords.some(k => eventText.includes(k))) score += 0.3;
+        }
+      }
+
+      // Boost: re-search hint keyword matching (replacement run)
+      if (reSearchHint) {
+        const eventText = `${event.title} ${event.description ?? ''} ${tags.join(' ')}`.toLowerCase();
+        const hintKeywords = reSearchHint.toLowerCase().split(/[\s,]+/).filter(k => k.length > 2);
+        if (hintKeywords.some(k => eventText.includes(k))) score += 0.5;
       }
 
       // Decay: alcohol-centric events score lower Mon–Wed

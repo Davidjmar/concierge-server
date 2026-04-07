@@ -9,6 +9,7 @@ export type EventSource =
   | 'denver_gov'
   | 'city_park_jazz'
   | 'botanic_gardens'
+  | 'edmtrain'
   | 'manual'
   | 'reddit'
   | 'local_blog';
@@ -94,6 +95,7 @@ export interface UserPreferencesV2 {
   indoor_outdoor?: 'indoor' | 'outdoor' | 'no_preference';
   budget?: 'free' | 'budget' | 'moderate' | 'splurge';
   max_distance_miles?: number;
+  custom_interests?: string[];  // freeform interest seeds, e.g. ['coworking lunch deals', 'grand openings']
 }
 
 /** @deprecated use UserPreferencesV2 */

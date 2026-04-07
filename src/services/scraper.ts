@@ -486,6 +486,8 @@ export class Scraper {
       if (type === 'bar') tags.push('happy_hour');
       if (/free/i.test(lower)) tags.push('free');
       if (/outdoor|patio/i.test(lower)) tags.push('outdoor');
+      if (/grand opening|now open|opening week|soft open|ribbon cutting/i.test(lower)) tags.push('grand_opening');
+      if (/free (food|meal|tasting|bite|sample)|complimentary food|free appetizer/i.test(lower)) tags.push('free_food');
 
       // Use publication date as the reference date for the item
       const start = new Date(pubDate);
@@ -1147,6 +1149,164 @@ export class Scraper {
     });
 
     return days.length > 0 ? days : [0, 1, 2, 3, 4, 5, 6];
+  }
+
+  // ─── EDMTrain ────────────────────────────────────────────────────────────────
+
+  /**
+   * Fetches electronic music events for Colorado from the EDMTrain API.
+   * Requires EDMTRAIN_API_KEY env var (free registration at edmtrain.com/api).
+   */
+  async scrapeEDMTrain(): Promise<RawEvent[]> {
+    const apiKey = process.env.EDMTRAIN_API_KEY;
+    if (!apiKey) {
+      console.warn('EDMTRAIN_API_KEY not set — skipping EDMTrain scrape');
+      return [];
+    }
+
+    const results: RawEvent[] = [];
+
+    try {
+      const response = await axios.get('https://edmtrain.com/api/events', {
+        params: { client: apiKey, states: 'Colorado' },
+        timeout: 15000,
+      });
+
+      const events: any[] = response.data?.data ?? [];
+      const now = new Date();
+      const twoWeeksOut = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
+
+      for (const ev of events) {
+        if (!ev.name || !ev.date) continue;
+
+        const startDate = new Date(ev.date);
+        if (isNaN(startDate.getTime()) || startDate < now || startDate > twoWeeksOut) continue;
+
+        // Only Denver-area events
+        const venue = ev.venue ?? {};
+        const venueLat = parseFloat(venue.latitude ?? '0');
+        const venueLng = parseFloat(venue.longitude ?? '0');
+        if (!venueLat || !venueLng) continue;
+
+        const distFromDenver = Math.sqrt(
+          Math.pow(venueLat - 39.7392, 2) + Math.pow(venueLng - (-104.9847), 2)
+        );
+        if (distFromDenver > 0.8) continue; // ~50 miles radius rough filter
+
+        const endDate = new Date(startDate.getTime() + 4 * 60 * 60 * 1000);
+
+        const tags = ['concert', 'live_music', 'edm', 'lively'];
+        if (ev.ages === '18+' || ev.ages === '21+') {/* no extra tag needed */}
+
+        results.push({
+          title: ev.name,
+          description: ev.description ?? `${ev.name} at ${venue.name ?? 'venue'} — ${ev.ages ?? 'all ages'}`,
+          sourceUrl: ev.link ?? `https://edmtrain.com/denver`,
+          source: 'edmtrain',
+          type: 'concert',
+          price: ev.ticketLink ? { min: 0, max: 50 } : { min: 0, max: 0 },
+          location: {
+            type: 'Point',
+            coordinates: [venueLng, venueLat],
+            address: venue.address ?? `${venue.name ?? ''}, Denver, CO`,
+          },
+          datetime: { start: startDate, end: endDate },
+          recurring: false,
+          tags,
+          venueName: venue.name ?? undefined,
+          city: 'denver',
+        });
+      }
+    } catch (err) {
+      console.error('EDMTrain scrape error:', err);
+    }
+
+    console.log(`EDMTrain: ${results.length} events`);
+    return results;
+  }
+
+  // ─── 5280 Magazine (grand openings) ──────────────────────────────────────────
+
+  /**
+   * Scrapes 5280.com/dining/ for new Denver restaurant openings and food news.
+   * Tags grand openings and free food opportunities.
+   */
+  async scrape5280(): Promise<RawEvent[]> {
+    const results: RawEvent[] = [];
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+    try {
+      const resp = await axios.get('https://www.5280.com/category/food-and-drink/', {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; kno-scraper/1.0)',
+          Accept: 'text/html,application/xhtml+xml',
+        },
+        timeout: 15000,
+      });
+
+      const $ = cheerio.load(resp.data);
+
+      // 5280 article cards
+      const articles = $('article, .post, .entry, [class*="article"]').toArray();
+
+      for (const el of articles) {
+        const titleEl = $(el).find('h2 a, h3 a, .entry-title a, .post-title a').first();
+        const title = titleEl.text().trim();
+        const link = titleEl.attr('href') ?? '';
+        const excerpt = $(el).find('.excerpt, .entry-summary, p').first().text().trim();
+        const dateEl = $(el).find('time, .date, [class*="date"]').first();
+        const dateStr = dateEl.attr('datetime') ?? dateEl.text().trim();
+
+        if (!title || !link) continue;
+
+        const lower = (title + ' ' + excerpt).toLowerCase();
+        // Only include opening/grand opening/free food content
+        const isRelevant = /grand opening|now open|opening (soon|week|day)|new restaurant|soft open|free (food|meal|bite|tasting)/i.test(lower);
+        if (!isRelevant) continue;
+
+        const pubDate = dateStr ? new Date(dateStr) : new Date();
+        if (isNaN(pubDate.getTime()) || pubDate < thirtyDaysAgo) continue;
+
+        const tags: string[] = ['local', 'food'];
+        if (/grand opening|now open|opening (soon|week|day)|soft open/i.test(lower)) tags.push('grand_opening');
+        if (/free (food|meal|bite|tasting)/i.test(lower)) tags.push('free_food', 'free');
+
+        const venueName = extractVenueFromTitle(title);
+        let coords: [number, number] = [DENVER.center.lng, DENVER.center.lat];
+        let address = 'Denver, CO';
+        if (venueName) {
+          const geocoded = await geocodingService.getCoordinates(`${venueName}, Denver, CO`);
+          if (geocoded) {
+            coords = geocoded as [number, number];
+            address = `${venueName}, Denver, CO`;
+          }
+        }
+
+        const start = new Date(pubDate);
+        start.setUTCHours(12, 0, 0, 0);
+        const end = new Date(start.getTime() + 2 * 60 * 60 * 1000);
+
+        results.push({
+          title,
+          description: excerpt || title,
+          sourceUrl: link.startsWith('http') ? link : `https://www.5280.com${link}`,
+          source: 'local_blog',
+          type: 'restaurant',
+          price: { min: 0, max: 30 },
+          location: { type: 'Point', coordinates: coords, address },
+          datetime: { start, end },
+          recurring: false,
+          tags,
+          venueName: venueName ?? undefined,
+          city: 'denver',
+        });
+      }
+    } catch (err) {
+      console.error('5280 scrape error:', err);
+    }
+
+    console.log(`5280: ${results.length} items`);
+    return results;
   }
 
   // ─── Deprecated stubs (kept for interface compat) ─────────────────────────────

@@ -40,6 +40,10 @@ app.get('/settings', (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'settings.html'));
 });
 
+app.get('/submit', (_req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'submit.html'));
+});
+
 // ── Database init ─────────────────────────────────────────────────────────────
 await initDatabase();
 
@@ -63,6 +67,26 @@ cron.schedule('0 */4 * * *', async () => {
     await upsertEvents(events, 'Google Sheets');
   } catch (err) {
     console.error('[Cron] Google Sheets error:', err);
+  }
+});
+
+// ── EDMTrain — Monday 3 AM UTC (with GoldenBuzz + Eventbrite batch) ───────────
+// Declared here so it runs in the same weekly batch
+async function runEDMTrainScrape() {
+  const scraper = new Scraper();
+  const events = await scraper.scrapeEDMTrain();
+  await upsertRawEvents(events, 'EDMTrain');
+}
+
+// ── 5280 grand openings — Wednesday 6 AM UTC ──────────────────────────────────
+cron.schedule('0 6 * * 3', async () => {
+  console.log('[Cron] 5280 grand openings scrape starting…');
+  try {
+    const scraper = new Scraper();
+    const events = await scraper.scrape5280();
+    await upsertRawEvents(events, '5280');
+  } catch (err) {
+    console.error('[Cron] 5280 error:', err);
   }
 });
 
@@ -100,6 +124,10 @@ cron.schedule('0 3 * * 1', async () => {
     console.log('=== Botanic Gardens ===');
     const botanicEvents = await scraper.scrapeBotanicGardens();
     await upsertRawEvents(botanicEvents, 'BotanicGardens');
+
+    // EDMTrain
+    console.log('=== EDMTrain ===');
+    await runEDMTrainScrape();
 
   } catch (err) {
     console.error('[Cron] Monday scrape error:', err);
@@ -195,6 +223,23 @@ app.post('/api/debug/scrape-botanic-gardens', requireDebugSecret, async (_req, r
   } catch (err) { console.error('[Debug] Botanic Gardens error:', err); }
 });
 
+app.post('/api/debug/scrape-edmtrain', requireDebugSecret, async (_req, res) => {
+  res.json({ ok: true, message: 'EDMTrain scrape started — check server logs' });
+  try {
+    await runEDMTrainScrape();
+  } catch (err) { console.error('[Debug] EDMTrain error:', err); }
+});
+
+app.post('/api/debug/scrape-5280', requireDebugSecret, async (_req, res) => {
+  res.json({ ok: true, message: '5280 scrape started — check server logs' });
+  try {
+    const scraper = new Scraper();
+    const events = await scraper.scrape5280();
+    await upsertRawEvents(events, '5280');
+    console.log(`[Debug] 5280: upserted ${events.length} events`);
+  } catch (err) { console.error('[Debug] 5280 error:', err); }
+});
+
 app.post('/api/debug/enrich-tags', requireDebugSecret, async (_req, res) => {
   res.json({ ok: true, message: 'Tag enrichment started — check server logs' });
   try {
@@ -267,6 +312,19 @@ app.post('/api/debug/scrape-all', requireDebugSecret, async (_req, res) => {
     await upsertRawEvents(botanic, 'BotanicGardens');
     results.botanic_gardens = botanic.length;
   } catch (err) { console.error('[ScrapeAll] Botanic Gardens error:', err); }
+
+  try {
+    console.log('[ScrapeAll] EDMTrain…');
+    await runEDMTrainScrape();
+    results.edmtrain = 0; // count is logged internally
+  } catch (err) { console.error('[ScrapeAll] EDMTrain error:', err); }
+
+  try {
+    console.log('[ScrapeAll] 5280…');
+    const mag = await scraper.scrape5280();
+    await upsertRawEvents(mag, '5280');
+    results['5280'] = mag.length;
+  } catch (err) { console.error('[ScrapeAll] 5280 error:', err); }
 
   console.log('[ScrapeAll] Done.', results);
 });

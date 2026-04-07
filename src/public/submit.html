@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>kno — submit a find</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&display=swap" rel="stylesheet" />
+  <style>
+    .upload-zone {
+      border: 2px dashed var(--border);
+      border-radius: var(--radius);
+      padding: 2.5rem 1.5rem;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+    }
+    .upload-zone:hover, .upload-zone.drag-over {
+      border-color: var(--accent);
+      background: var(--surface);
+    }
+    .upload-zone input[type="file"] { display: none; }
+    .upload-zone .icon { font-size: 2rem; margin-bottom: 0.75rem; }
+    .preview-img {
+      width: 100%;
+      max-height: 280px;
+      object-fit: contain;
+      border-radius: var(--radius);
+      margin-bottom: 1rem;
+      border: 1px solid var(--border);
+    }
+    .spinner {
+      display: inline-block;
+      width: 1.2rem;
+      height: 1.2rem;
+      border: 2px solid var(--muted);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      vertical-align: middle;
+      margin-right: 0.4rem;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .field-row { margin-bottom: 0.9rem; }
+    .field-row label { display: block; font-size: 0.82rem; color: var(--muted); margin-bottom: 0.25rem; }
+    .field-row input, .field-row textarea {
+      width: 100%; box-sizing: border-box;
+      font-family: inherit; font-size: 0.9rem;
+      padding: 0.5rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+    }
+    .tag-input-wrap {
+      display: flex; flex-wrap: wrap; gap: 0.4rem;
+      padding: 0.4rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      min-height: 2.4rem;
+      cursor: text;
+    }
+    .tag-pill {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 2rem;
+      padding: 0.15rem 0.6rem;
+      font-size: 0.8rem;
+      display: flex; align-items: center; gap: 0.3rem;
+    }
+    .tag-pill button {
+      background: none; border: none; cursor: pointer;
+      color: var(--muted); font-size: 0.9rem; padding: 0; line-height: 1;
+    }
+    .tag-input-wrap input {
+      border: none; outline: none; background: none;
+      font-family: inherit; font-size: 0.85rem; color: var(--text);
+      min-width: 6rem; flex: 1; padding: 0;
+    }
+    .success-state { text-align: center; padding: 2rem 0; }
+    .success-state .big-check { font-size: 3rem; margin-bottom: 0.75rem; }
+  </style>
+</head>
+<body>
+
+<nav class="nav">
+  <a href="/" class="nav-logo">kno</a>
+  <div class="nav-links">
+    <a href="/proposals">My proposals</a>
+    <a href="/submit" style="color:var(--text)">Submit a find</a>
+    <a href="/settings">Settings</a>
+    <a href="/auth/logout" onclick="localStorage.removeItem('kno_user_id')">Sign out</a>
+  </div>
+</nav>
+
+<div class="container" style="margin-top:1.5rem">
+  <div id="auth-check" style="text-align:center;padding:3rem;color:var(--muted)">Loading…</div>
+
+  <!-- ── Step 1: Capture ── -->
+  <div id="step-capture" style="display:none">
+    <h1 style="font-size:1.5rem;font-weight:800;margin-bottom:0.25rem">Submit a find</h1>
+    <p class="text-muted text-sm" style="margin-bottom:1.5rem">Snap a photo of a special board, flyer, or menu. kno will pull out the details.</p>
+
+    <div class="upload-zone" id="upload-zone" onclick="document.getElementById('photo-input').click()">
+      <div class="icon">📷</div>
+      <p style="font-weight:600;margin-bottom:0.25rem">Take a photo or upload</p>
+      <p class="text-muted text-sm">Tap to open camera or choose a file</p>
+      <input type="file" id="photo-input" accept="image/*" capture="environment" onchange="handleFile(this.files[0])" />
+    </div>
+  </div>
+
+  <!-- ── Step 2: Processing ── -->
+  <div id="step-processing" style="display:none;text-align:center;padding:2rem 0">
+    <img id="preview-img-processing" class="preview-img" style="max-height:200px" alt="" />
+    <p style="color:var(--muted)"><span class="spinner"></span>Reading the image…</p>
+  </div>
+
+  <!-- ── Step 3: Review ── -->
+  <div id="step-review" style="display:none">
+    <h1 style="font-size:1.5rem;font-weight:800;margin-bottom:0.25rem">Review details</h1>
+    <p class="text-muted text-sm" style="margin-bottom:1.5rem">kno read the image — check and edit anything that's wrong.</p>
+
+    <img id="preview-img-review" class="preview-img" alt="" />
+
+    <div class="card">
+      <div class="field-row">
+        <label>Event or special name *</label>
+        <input type="text" id="r-title" placeholder="e.g. Tuesday Happy Hour" />
+      </div>
+      <div class="field-row">
+        <label>Venue name</label>
+        <input type="text" id="r-venue" placeholder="e.g. The Denver Biscuit Co." />
+      </div>
+      <div class="field-row">
+        <label>Description</label>
+        <textarea id="r-desc" rows="2" placeholder="What's the deal?"></textarea>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem">
+        <div class="field-row">
+          <label>Date</label>
+          <input type="text" id="r-date" placeholder="e.g. every Tuesday" />
+        </div>
+        <div class="field-row">
+          <label>Time</label>
+          <input type="text" id="r-time" placeholder="e.g. 4–6pm" />
+        </div>
+        <div class="field-row">
+          <label>Price / deal</label>
+          <input type="text" id="r-price" placeholder="e.g. $5 drafts" />
+        </div>
+        <div class="field-row">
+          <label>Address</label>
+          <input type="text" id="r-address" placeholder="e.g. 200 E Colfax Ave" />
+        </div>
+      </div>
+      <div class="field-row">
+        <label>Tags</label>
+        <div class="tag-input-wrap" id="tag-wrap" onclick="document.getElementById('tag-raw-input').focus()">
+          <!-- Tag pills rendered here -->
+          <input type="text" id="tag-raw-input" placeholder="Add tag, press Enter" onkeydown="handleTagInput(event)" />
+        </div>
+      </div>
+    </div>
+
+    <div class="btn-row" style="margin-top:1.25rem">
+      <button class="btn btn-secondary" onclick="resetToCapture()">Retake photo</button>
+      <button class="btn btn-primary" id="submit-btn" onclick="confirmSubmit()">Submit to kno</button>
+    </div>
+  </div>
+
+  <!-- ── Step 4: Success ── -->
+  <div id="step-success" style="display:none">
+    <div class="success-state">
+      <div class="big-check">✅</div>
+      <h2 style="margin-bottom:0.5rem">Nice find!</h2>
+      <p class="text-muted">kno added it to the pool. It may show up in your proposals soon.</p>
+      <div style="margin-top:1.5rem;display:flex;gap:1rem;justify-content:center">
+        <a href="/proposals" class="btn btn-primary">My proposals</a>
+        <button class="btn btn-secondary" onclick="resetToCapture()">Submit another</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Auth check ────────────────────────────────────────────────────────────────
+(async () => {
+  try {
+    const res = await fetch('/api/me');
+    if (res.status === 401) { window.location.href = '/'; return; }
+    document.getElementById('auth-check').style.display = 'none';
+    document.getElementById('step-capture').style.display = 'block';
+  } catch {
+    document.getElementById('auth-check').textContent = 'Failed to load. Please refresh.';
+  }
+})();
+
+// ── Drag and drop ─────────────────────────────────────────────────────────────
+const zone = document.getElementById('upload-zone');
+zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
+zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+zone.addEventListener('drop', e => {
+  e.preventDefault();
+  zone.classList.remove('drag-over');
+  const file = e.dataTransfer?.files?.[0];
+  if (file) handleFile(file);
+});
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let currentTags = [];
+
+// ── File handling ─────────────────────────────────────────────────────────────
+async function handleFile(file) {
+  if (!file || !file.type.startsWith('image/')) return;
+
+  const dataUrl = await readFileAsDataURL(file);
+
+  // Show processing state
+  showStep('step-processing');
+  document.getElementById('preview-img-processing').src = dataUrl;
+
+  try {
+    const formData = new FormData();
+    formData.append('photo', file);
+    const res = await fetch('/api/submit/photo', { method: 'POST', body: formData });
+    if (res.status === 401) { window.location.href = '/'; return; }
+    if (!res.ok) throw new Error('Upload failed');
+    const { extracted } = await res.json();
+
+    // Populate review form
+    document.getElementById('r-title').value = extracted?.title ?? '';
+    document.getElementById('r-venue').value = extracted?.venue_name ?? '';
+    document.getElementById('r-desc').value = extracted?.description ?? '';
+    document.getElementById('r-date').value = extracted?.date_hint ?? '';
+    document.getElementById('r-time').value = extracted?.time_hint ?? '';
+    document.getElementById('r-price').value = extracted?.price_hint ?? '';
+    document.getElementById('r-address').value = extracted?.address_hint ?? '';
+
+    currentTags = Array.isArray(extracted?.tags) ? [...extracted.tags] : [];
+    renderTags();
+
+    document.getElementById('preview-img-review').src = dataUrl;
+    showStep('step-review');
+  } catch (err) {
+    showStep('step-capture');
+    alert('Could not read the image. Please try a clearer photo.');
+  }
+}
+
+function readFileAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = e => resolve(e.target.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+// ── Tag management ────────────────────────────────────────────────────────────
+function handleTagInput(e) {
+  if (e.key === 'Enter' || e.key === ',') {
+    e.preventDefault();
+    const val = e.target.value.trim().toLowerCase().replace(/\s+/g, '_');
+    if (val && !currentTags.includes(val)) {
+      currentTags.push(val);
+      renderTags();
+    }
+    e.target.value = '';
+  }
+}
+
+function removeTag(tag) {
+  currentTags = currentTags.filter(t => t !== tag);
+  renderTags();
+}
+
+function renderTags() {
+  const wrap = document.getElementById('tag-wrap');
+  const input = document.getElementById('tag-raw-input');
+  // Remove existing pills
+  wrap.querySelectorAll('.tag-pill').forEach(p => p.remove());
+  // Re-insert before the input
+  for (const tag of currentTags) {
+    const pill = document.createElement('span');
+    pill.className = 'tag-pill';
+    pill.innerHTML = `${tag.replace(/_/g, ' ')} <button onclick="removeTag('${tag}')" type="button">×</button>`;
+    wrap.insertBefore(pill, input);
+  }
+}
+
+// ── Submit ────────────────────────────────────────────────────────────────────
+async function confirmSubmit() {
+  const title = document.getElementById('r-title').value.trim();
+  if (!title) { document.getElementById('r-title').focus(); return; }
+
+  const btn = document.getElementById('submit-btn');
+  btn.textContent = 'Submitting…';
+  btn.disabled = true;
+
+  try {
+    const res = await fetch('/api/submit/confirm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title,
+        venue_name: document.getElementById('r-venue').value.trim() || null,
+        description: document.getElementById('r-desc').value.trim() || null,
+        date_hint: document.getElementById('r-date').value.trim() || null,
+        time_hint: document.getElementById('r-time').value.trim() || null,
+        price_hint: document.getElementById('r-price').value.trim() || null,
+        address_hint: document.getElementById('r-address').value.trim() || null,
+        tags: currentTags,
+      }),
+    });
+    if (!res.ok) throw new Error();
+    showStep('step-success');
+  } catch {
+    btn.textContent = 'Submit to kno';
+    btn.disabled = false;
+    alert('Failed to submit. Please try again.');
+  }
+}
+
+// ── Navigation ────────────────────────────────────────────────────────────────
+function showStep(id) {
+  ['step-capture', 'step-processing', 'step-review', 'step-success'].forEach(s => {
+    document.getElementById(s).style.display = s === id ? 'block' : 'none';
+  });
+}
+
+function resetToCapture() {
+  document.getElementById('photo-input').value = '';
+  currentTags = [];
+  showStep('step-capture');
+}
+</script>
+</body>
+</html>

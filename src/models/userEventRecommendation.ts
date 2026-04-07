@@ -17,6 +17,11 @@ class UserEventRecommendation extends Model {
   declare user_response?: UserResponse;
   declare response_detected_at?: Date;
   declare proposal_score?: number;
+
+  // Sprint 8: enhanced pass feedback
+  declare pass_reason?: string;
+  declare re_search_hint?: string;
+  declare needs_replacement?: boolean;
 }
 
 UserEventRecommendation.init(
@@ -61,6 +66,19 @@ UserEventRecommendation.init(
     proposal_score: {
       type: DataTypes.FLOAT,
       allowNull: true,
+    },
+    pass_reason: {
+      type: DataTypes.STRING(50),
+      allowNull: true,
+    },
+    re_search_hint: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    },
+    needs_replacement: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
     },
   },
   {

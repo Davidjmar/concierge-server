@@ -59,6 +59,7 @@ Event.init(
         'westword',
         'google_sheets',
         'denver_gov',
+        'edmtrain',
         'manual',
         'reddit',
         'local_blog'

@@ -178,6 +178,11 @@ async function saveLocations() {
 // ─── Step 3: Tastes ───────────────────────────────────────────────────────────
 
 async function saveTastes() {
+  const rawInterests = document.getElementById('custom-interests')?.value?.trim() ?? '';
+  const customInterests = rawInterests
+    ? rawInterests.split(/[\n,]+/).map(s => s.trim()).filter(Boolean)
+    : [];
+
   const prefs = {
     drink: chipsSelected('chips-drink'),
     food: chipsSelected('chips-food'),
@@ -190,6 +195,7 @@ async function saveTastes() {
     max_distance_miles: parseInt(
       document.querySelector('#toggle-distance .toggle-btn.selected')?.dataset.val ?? '5', 10
     ),
+    custom_interests: customInterests,
   };
   Object.assign(state.preferences, prefs);
 
