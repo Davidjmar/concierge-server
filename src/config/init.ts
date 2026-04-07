@@ -8,8 +8,8 @@ async function initDatabase() {
     await sequelize.authenticate();
     console.log('Database connection has been established successfully.');
 
-    // Sync all models
-    await sequelize.sync();
+    // Sync all models — alter:true adds new columns without dropping existing ones
+    await sequelize.sync({ alter: true });
     console.log('All models were synchronized successfully.');
   } catch (error) {
     console.error('Unable to connect to the database:', error);
