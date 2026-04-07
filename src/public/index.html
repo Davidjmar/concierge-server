@@ -241,6 +241,17 @@
         <span class="chip" data-val="film">🎬 Film</span>
         <span class="chip" data-val="class">✏️ Classes</span>
       </div>
+
+      <p class="section-title" style="font-size:1rem;margin-top:1rem">Activities</p>
+      <div class="chip-grid" id="chips-activities">
+        <span class="chip" data-val="running">🏃 Running</span>
+        <span class="chip" data-val="hiking">🥾 Hiking</span>
+        <span class="chip" data-val="cycling">🚴 Cycling</span>
+        <span class="chip" data-val="climbing">🧗 Climbing</span>
+        <span class="chip" data-val="yoga">🧘 Yoga</span>
+        <span class="chip" data-val="gardening">🌱 Gardening</span>
+        <span class="chip" data-val="nature_walks">🌲 Nature walks</span>
+      </div>
     </div>
 
     <div class="card">
@@ -284,17 +295,11 @@
     </div>
 
     <p class="section-title">Your schedule</p>
-    <p class="section-desc">kno will only suggest things when you're likely free.</p>
+    <p class="section-desc">Tell kno which days you want suggestions, and when to deliver them.</p>
 
     <div class="card">
-      <p class="section-title" style="font-size:1rem">How often should kno suggest things?</p>
-      <div class="toggle-row" id="toggle-frequency">
-        <button class="toggle-btn" data-val="daily">Daily</button>
-        <button class="toggle-btn selected" data-val="2x_week">2× a week</button>
-        <button class="toggle-btn" data-val="weekly">Weekly</button>
-      </div>
-
-      <p class="section-title" style="font-size:1rem">Which days are you usually open?</p>
+      <p class="section-title" style="font-size:1rem">Which days do you want suggestions?</p>
+      <p class="text-sm text-muted" style="margin-bottom:0.5rem">kno will only propose things on the days you pick.</p>
       <div class="chip-grid" id="chips-days">
         <span class="chip" data-val="monday">Mon</span>
         <span class="chip" data-val="tuesday">Tue</span>
@@ -304,12 +309,24 @@
         <span class="chip" data-val="saturday">Sat</span>
         <span class="chip" data-val="sunday">Sun</span>
       </div>
+    </div>
 
-      <p class="section-title" style="font-size:1rem">How many suggestions at a time?</p>
-      <div class="toggle-row" id="toggle-proposals">
-        <button class="toggle-btn" data-val="1">1</button>
-        <button class="toggle-btn selected" data-val="2">2</button>
-        <button class="toggle-btn" data-val="3">3</button>
+    <div class="card">
+      <p class="section-title" style="font-size:1rem">When should suggestions arrive?</p>
+      <p class="text-sm text-muted" style="margin-bottom:0.75rem">All deliveries happen at noon Denver time.</p>
+      <div id="delivery-opts">
+        <div class="delivery-opt selected" data-val="day_of">
+          <strong>Day of</strong>
+          <span>Suggestions drop on your calendar the morning of each event day.</span>
+        </div>
+        <div class="delivery-opt" data-val="sunday">
+          <strong>All on Sunday</strong>
+          <span>Get the whole week's suggestions at once every Sunday.</span>
+        </div>
+        <div class="delivery-opt" data-val="smart">
+          <strong>Smart</strong>
+          <span>Weekday suggestions arrive day-of. Weekend suggestions land Wednesday so you can plan ahead.</span>
+        </div>
       </div>
     </div>
 

@@ -29,6 +29,9 @@ class User extends Model {
   declare max_proposals_per_run?: number;
   declare city?: string;
 
+  // Delivery timing preference
+  declare delivery_timing?: string; // 'day_of' | 'sunday' | 'smart'
+
   // Feedback
   declare interest_matrix?: InterestMatrix;
   declare onboarding_complete?: boolean;
@@ -108,6 +111,11 @@ User.init(
       type: DataTypes.STRING,
       allowNull: true,
       defaultValue: 'denver',
+    },
+    delivery_timing: {
+      type: DataTypes.STRING,
+      allowNull: true,
+      defaultValue: 'day_of',
     },
     interest_matrix: {
       type: DataTypes.JSONB,

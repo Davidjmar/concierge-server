@@ -144,6 +144,8 @@ export interface InterestMatrix {
 
 export type UserResponse = 'kept' | 'deleted' | 'pending';
 
+export type DeliveryTiming = 'day_of' | 'sunday' | 'smart';
+
 // ─── Shared ───────────────────────────────────────────────────────────────────
 
 export interface WhereQuery {

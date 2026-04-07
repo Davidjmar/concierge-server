@@ -143,6 +143,17 @@
           <span class="chip" data-val="class">✏️ Classes</span>
         </div>
 
+        <p class="section-title" style="font-size:1rem;margin-top:1rem">Activities</p>
+        <div class="chip-grid" id="chips-activities">
+          <span class="chip" data-val="running">🏃 Running</span>
+          <span class="chip" data-val="hiking">🥾 Hiking</span>
+          <span class="chip" data-val="cycling">🚴 Cycling</span>
+          <span class="chip" data-val="climbing">🧗 Climbing</span>
+          <span class="chip" data-val="yoga">🧘 Yoga</span>
+          <span class="chip" data-val="gardening">🌱 Gardening</span>
+          <span class="chip" data-val="nature_walks">🌲 Nature walks</span>
+        </div>
+
         <p class="section-title" style="font-size:1rem">Budget</p>
         <div class="budget-options" id="budget-opts">
           <div class="budget-opt" data-val="free"><span class="icon">🆓</span>Free</div>
@@ -184,14 +195,8 @@
     <div class="settings-section">
       <p class="settings-section-header">Schedule</p>
       <div class="card">
-        <p class="section-title" style="font-size:1rem">How often should kno suggest things?</p>
-        <div class="toggle-row" id="toggle-frequency">
-          <button class="toggle-btn" data-val="daily">Daily</button>
-          <button class="toggle-btn" data-val="2x_week">2× a week</button>
-          <button class="toggle-btn" data-val="weekly">Weekly</button>
-        </div>
-
-        <p class="section-title" style="font-size:1rem">Which days are you usually open?</p>
+        <p class="section-title" style="font-size:1rem">Which days do you want suggestions?</p>
+        <p class="text-sm text-muted" style="margin-bottom:0.5rem">kno will only propose things on the days you pick.</p>
         <div class="chip-grid" id="chips-days">
           <span class="chip" data-val="monday">Mon</span>
           <span class="chip" data-val="tuesday">Tue</span>
@@ -202,13 +207,21 @@
           <span class="chip" data-val="sunday">Sun</span>
         </div>
 
-        <p class="section-title" style="font-size:1rem">Proposals per week</p>
-        <div class="toggle-row" id="toggle-proposals">
-          <button class="toggle-btn" data-val="1">1</button>
-          <button class="toggle-btn" data-val="2">2</button>
-          <button class="toggle-btn" data-val="3">3</button>
-          <button class="toggle-btn" data-val="5">5</button>
-          <button class="toggle-btn" data-val="7">7</button>
+        <p class="section-title" style="font-size:1rem;margin-top:1.25rem">When should suggestions arrive?</p>
+        <p class="text-sm text-muted" style="margin-bottom:0.75rem">All deliveries happen at noon Denver time.</p>
+        <div id="delivery-opts">
+          <div class="delivery-opt" data-val="day_of">
+            <strong>Day of</strong>
+            <span>Suggestions drop on your calendar the morning of each event day.</span>
+          </div>
+          <div class="delivery-opt" data-val="sunday">
+            <strong>All on Sunday</strong>
+            <span>Get the whole week's suggestions at once every Sunday.</span>
+          </div>
+          <div class="delivery-opt" data-val="smart">
+            <strong>Smart</strong>
+            <span>Weekday suggestions arrive day-of. Weekend suggestions land Wednesday so you can plan ahead.</span>
+          </div>
         </div>
 
         <div class="save-row">
@@ -259,8 +272,6 @@ function populate(data) {
   // Toggle buttons (single-select)
   selectToggle('toggle-activity', prefs.activity_level ?? 'medium');
   selectToggle('toggle-setting', prefs.indoor_outdoor ?? 'no_preference');
-  selectToggle('toggle-frequency', data.schedule?.frequency ?? '2x_week');
-  selectToggle('toggle-proposals', String(data.schedule?.max_proposals ?? 2));
   selectToggle('toggle-distance', String(prefs.max_distance_miles ?? 5));
 
   // Budget
@@ -271,6 +282,16 @@ function populate(data) {
   // Days chips
   selectChips('chips-days', data.schedule?.days ?? []);
 
+  // Activities chips (stored in event_types alongside events)
+  const activityVals = ['running', 'hiking', 'cycling', 'climbing', 'yoga', 'gardening', 'nature_walks'];
+  selectChips('chips-activities', (prefs.event_types ?? []).filter(v => activityVals.includes(v)));
+
+  // Delivery timing
+  const deliveryVal = data.schedule?.delivery_timing ?? 'day_of';
+  document.querySelectorAll('#delivery-opts .delivery-opt').forEach(opt => {
+    opt.classList.toggle('selected', opt.dataset.val === deliveryVal);
+  });
+
   // Custom interests
   const interests = prefs.custom_interests ?? [];
   document.getElementById('custom-interests').value = interests.join('\n');
@@ -279,6 +300,18 @@ function populate(data) {
   wireChips();
   wireToggles();
   wireBudget();
+  wireDeliveryOpts();
+}
+
+function wireDeliveryOpts() {
+  const container = document.getElementById('delivery-opts');
+  if (!container) return;
+  container.querySelectorAll('.delivery-opt').forEach(opt => {
+    opt.addEventListener('click', () => {
+      container.querySelectorAll('.delivery-opt').forEach(o => o.classList.remove('selected'));
+      opt.classList.add('selected');
+    });
+  });
 }
 
 function selectChips(containerId, values) {
@@ -302,7 +335,7 @@ function wireChips() {
 }
 
 function wireToggles() {
-  ['toggle-activity', 'toggle-setting', 'toggle-frequency', 'toggle-proposals', 'toggle-distance'].forEach(id => {
+  ['toggle-activity', 'toggle-setting', 'toggle-distance'].forEach(id => {
     const container = document.getElementById(id);
     if (!container) return;
     container.querySelectorAll('.toggle-btn').forEach(btn => {
@@ -364,7 +397,7 @@ async function saveTastes() {
     drink: chipsSelected('chips-drink'),
     food: chipsSelected('chips-food'),
     dietary: chipsSelected('chips-dietary'),
-    event_types: chipsSelected('chips-events'),
+    event_types: [...chipsSelected('chips-events'), ...chipsSelected('chips-activities')],
     vibe: chipsSelected('chips-vibe'),
     activity_level: toggleSelected('toggle-activity') ?? 'medium',
     indoor_outdoor: toggleSelected('toggle-setting') ?? 'no_preference',
@@ -415,11 +448,8 @@ async function saveSchedule() {
   const days = chipsSelected('chips-days');
   if (days.length === 0) { showStatus('status-schedule', 'error', 'Pick at least one day'); return; }
 
-  const schedule = {
-    frequency: toggleSelected('toggle-frequency') ?? '2x_week',
-    days,
-    max_proposals: parseInt(toggleSelected('toggle-proposals') ?? '2', 10),
-  };
+  const delivery_timing = document.querySelector('#delivery-opts .delivery-opt.selected')?.dataset.val ?? 'day_of';
+  const schedule = { days, delivery_timing };
 
   try {
     const res = await fetch('/api/onboarding/schedule', {

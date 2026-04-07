@@ -59,9 +59,8 @@ const state = {
     max_distance_miles: 5,
   },
   schedule: {
-    frequency: '2x_week',
     days: ['wednesday', 'thursday', 'friday'],
-    max_proposals: 2,
+    delivery_timing: 'day_of',
   },
 };
 
@@ -108,7 +107,7 @@ function wireInteractions() {
     chip.addEventListener('click', () => chip.classList.toggle('selected'));
   });
 
-  ['toggle-activity', 'toggle-setting', 'toggle-frequency', 'toggle-proposals'].forEach(id => {
+  ['toggle-activity', 'toggle-setting', 'toggle-distance'].forEach(id => {
     const container = document.getElementById(id);
     if (!container) return;
     container.querySelectorAll('.toggle-btn').forEach(btn => {
@@ -118,6 +117,16 @@ function wireInteractions() {
       });
     });
   });
+
+  const deliveryOpts = document.getElementById('delivery-opts');
+  if (deliveryOpts) {
+    deliveryOpts.querySelectorAll('.delivery-opt').forEach(opt => {
+      opt.addEventListener('click', () => {
+        deliveryOpts.querySelectorAll('.delivery-opt').forEach(o => o.classList.remove('selected'));
+        opt.classList.add('selected');
+      });
+    });
+  }
 
   document.querySelectorAll('#budget-opts .budget-opt').forEach(opt => {
     opt.addEventListener('click', () => {
@@ -187,7 +196,7 @@ async function saveTastes() {
     drink: chipsSelected('chips-drink'),
     food: chipsSelected('chips-food'),
     dietary: chipsSelected('chips-dietary'),
-    event_types: chipsSelected('chips-events'),
+    event_types: [...chipsSelected('chips-events'), ...chipsSelected('chips-activities')],
     vibe: chipsSelected('chips-vibe'),
     activity_level: toggleSelected('toggle-activity') ?? 'medium',
     indoor_outdoor: toggleSelected('toggle-setting') ?? 'no_preference',
@@ -215,11 +224,11 @@ async function saveTastes() {
 // ─── Step 4: Schedule ─────────────────────────────────────────────────────────
 
 async function saveSchedule() {
-  const schedule = {
-    frequency: toggleSelected('toggle-frequency') ?? '2x_week',
-    days: chipsSelected('chips-days'),
-    max_proposals: parseInt(toggleSelected('toggle-proposals') ?? '2', 10),
-  };
+  const days = chipsSelected('chips-days');
+  if (days.length === 0) { alert('Please pick at least one day.'); return; }
+
+  const delivery_timing = document.querySelector('#delivery-opts .delivery-opt.selected')?.dataset.val ?? 'day_of';
+  const schedule = { days, delivery_timing };
   Object.assign(state.schedule, schedule);
 
   try {
@@ -242,14 +251,18 @@ function showSummary() {
   const prefs = state.preferences;
   const sched = state.schedule;
 
+  const DELIVERY_LABELS = {
+    day_of: 'Day of (noon)',
+    sunday: 'All on Sunday',
+    smart: 'Smart delivery',
+  };
   const items = [
     prefs.event_types.length ? `Events: ${prefs.event_types.join(', ').replace(/_/g, ' ')}` : null,
     prefs.drink.length ? `Drinks: ${prefs.drink.join(', ').replace(/_/g, ' ')}` : null,
     `Budget: ${prefs.budget}`,
     `Max distance: ${prefs.max_distance_miles} mi`,
-    `Frequency: ${sched.frequency.replace(/_/g, ' ')}`,
     sched.days.length ? `Days: ${sched.days.join(', ')}` : null,
-    `Proposals per week: ${sched.max_proposals}`,
+    `Delivery: ${DELIVERY_LABELS[sched.delivery_timing] ?? sched.delivery_timing}`,
   ].filter(Boolean);
 
   document.getElementById('profile-summary').innerHTML = items

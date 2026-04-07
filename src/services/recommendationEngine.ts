@@ -84,20 +84,26 @@ class RecommendationEngine {
    */
   async runForEligibleUsers(): Promise<void> {
     const now = new Date();
-    const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-    const todayName = dayNames[now.getUTCDay()];
+    const DAY_NAMES = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+    const todayName = DAY_NAMES[now.getUTCDay()];
+    const denverHour = (now.getUTCHours() - DENVER_UTC_OFFSET_HOURS + 24) % 24;
 
-    console.log(`[RecommendationEngine] Tick — UTC ${now.getUTCHours()}:00, day=${todayName}`);
+    console.log(`[RecommendationEngine] Tick — Denver ${denverHour}:00, day=${todayName}`);
 
-    const users = await User.findAll({
-      where: { onboarding_complete: true },
-    });
+    // Only deliver at/after noon Denver time
+    if (denverHour < 12) {
+      console.log('[RecommendationEngine] Before noon Denver — skipping');
+      return;
+    }
+
+    const users = await User.findAll({ where: { onboarding_complete: true } });
 
     for (const user of users) {
       try {
-        if (!this.userMatchesSchedule(user, todayName)) continue;
-        console.log(`[RecommendationEngine] Running for user ${user.id} (${user.email})`);
-        await this.runForUser(user);
+        const { shouldRun, targetDays } = this.getDeliveryInfo(user, todayName);
+        if (!shouldRun) continue;
+        console.log(`[RecommendationEngine] Running for user ${user.id} — targeting days: ${targetDays.join(', ')}`);
+        await this.runForUser(user, targetDays);
       } catch (err) {
         console.error(`[RecommendationEngine] Error for user ${user.id}:`, err);
       }
@@ -134,7 +140,7 @@ class RecommendationEngine {
    * 3. Create Google Calendar proposals
    * 4. Record in DB
    */
-  async runForUser(user: User): Promise<void> {
+  async runForUser(user: User, targetDays: string[] = []): Promise<void> {
     if (!user.google_access_token) {
       console.warn(`User ${user.id} has no Google access token — skipping`);
       return;
@@ -142,10 +148,17 @@ class RecommendationEngine {
 
     // 1. Get calendar availability
     const busyWindows = await calendarService.getBusyWindows(user);
-    const openWindows = calendarService.getOpenWindows(busyWindows, user);
+    const allOpenWindows = calendarService.getOpenWindows(busyWindows, user);
+
+    // Filter windows to only target days (unless this is a replacement run)
+    const DAY_NAMES = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+    const targetDaySet = new Set(targetDays);
+    const openWindows = targetDays.length > 0
+      ? allOpenWindows.filter(w => targetDaySet.has(DAY_NAMES[w.start.getUTCDay()]))
+      : allOpenWindows;
 
     if (openWindows.length === 0) {
-      console.log(`User ${user.id}: no open windows found`);
+      console.log(`User ${user.id}: no open windows on target days (${targetDays.join(', ')})`);
       return;
     }
 
@@ -161,8 +174,9 @@ class RecommendationEngine {
       order: [['response_detected_at', 'DESC']],
     });
 
-    // max_proposals_per_run is a weekly budget — check how many already sent this week
-    const weeklyLimit = user.max_proposals_per_run ?? 3;
+    // Weekly budget = number of selected days, capped at 5
+    const availableDays = user.recommendation_days ?? [];
+    const weeklyLimit = Math.min(availableDays.length || 1, 5);
     const alreadySentThisWeek = await this.proposalsThisWeek(user.id);
     const remainingThisWeek = weeklyLimit - alreadySentThisWeek;
 
@@ -171,14 +185,15 @@ class RecommendationEngine {
       return;
     }
 
-    // Hard cap of 1 per daily run; bypass once-per-day guard if replacement is needed
+    // Guard: already ran today (bypass for replacement runs)
     const alreadyRanToday = await this.userAlreadyRanToday(user.id);
     if (alreadyRanToday && !replacementNeeded) {
       console.log(`User ${user.id}: already ran today and no replacement needed — skipping`);
       return;
     }
 
-    const proposalsThisRun = replacementNeeded ? 1 : Math.min(remainingThisWeek, 1);
+    // One proposal per target day, capped at remaining weekly budget
+    const proposalsThisRun = replacementNeeded ? 1 : Math.min(targetDays.length || 1, remainingThisWeek);
 
     // Pass the re_search_hint (if any) to the scoring pipeline
     const reSearchHint = replacementNeeded?.re_search_hint ?? null;
@@ -332,6 +347,13 @@ class RecommendationEngine {
         outdoor: ['park', 'social'],
         film: ['film'],
         class: ['class'],
+        running: ['park', 'sports'],
+        hiking: ['park', 'sports'],
+        cycling: ['park', 'sports'],
+        climbing: ['park', 'sports'],
+        yoga: ['class', 'park'],
+        gardening: ['park'],
+        nature_walks: ['park'],
       };
       const eventTypes = [...new Set(
         preferredTypes.flatMap(t => typeMap[t] ?? [t])
@@ -516,7 +538,7 @@ class RecommendationEngine {
       if (seenVenues.has(venueName)) continue;
       seenVenues.add(venueName);
       results.push(candidate);
-      if (results.length >= (user.max_proposals_per_run ?? 3)) break;
+      if (results.length >= Math.min((user.recommendation_days ?? []).length || 1, 5)) break;
     }
 
     return results;
@@ -533,10 +555,11 @@ class RecommendationEngine {
     const now = new Date();
     const todayName = dayNames[now.getUTCDay()];
 
-    const scheduleMatch = this.userMatchesSchedule(user, todayName);
+    const { shouldRun: scheduleMatch, targetDays } = this.getDeliveryInfo(user, todayName);
     const alreadyRan = await this.userAlreadyRanToday(user.id);
     const alreadySentThisWeek = await this.proposalsThisWeek(user.id);
-    const weeklyLimit = user.max_proposals_per_run ?? 3;
+    const availableDays = user.recommendation_days ?? [];
+    const weeklyLimit = Math.min(availableDays.length || 1, 5);
 
     if (!user.google_access_token) {
       return { blocked: 'no_google_token', user_id: user.id };
@@ -569,6 +592,8 @@ class RecommendationEngine {
       now_utc: now.toISOString(),
       today_name: todayName,
       schedule_match: scheduleMatch,
+      target_days: targetDays,
+      delivery_timing: user.delivery_timing ?? 'day_of',
       already_ran_today: alreadyRan,
       proposals_this_week: alreadySentThisWeek,
       weekly_limit: weeklyLimit,
@@ -576,7 +601,6 @@ class RecommendationEngine {
       busy_windows_count: busyWindows.length,
       open_windows_count: openWindows.length,
       recommendation_days: user.recommendation_days,
-      recommendation_frequency: user.recommendation_frequency,
       home_location: user.home_location,
       work_location: user.work_location,
       preferences_summary: {
@@ -768,20 +792,38 @@ class RecommendationEngine {
    * that matches the user's day list and frequency. The once-per-day guard in
    * runForEligibleUsers prevents duplicates.
    */
-  private userMatchesSchedule(user: User, todayName: string): boolean {
-    const days = user.recommendation_days ?? [];
+  private getDeliveryInfo(user: User, todayName: string): { shouldRun: boolean; targetDays: string[] } {
+    const availableDays = user.recommendation_days ?? [];
+    const delivery = user.delivery_timing ?? 'day_of';
+    const WEEKDAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'];
+    const WEEKEND = ['saturday', 'sunday'];
 
-    // If days list is empty, treat as every day
-    if (days.length > 0 && !days.includes(todayName)) return false;
+    if (delivery === 'day_of') {
+      // Fire on each selected day — today must be a selected day
+      const shouldRun = availableDays.length === 0 || availableDays.includes(todayName);
+      return { shouldRun, targetDays: shouldRun ? [todayName] : [] };
+    }
 
-    const freq = user.recommendation_frequency ?? 'weekly';
-    if (freq === 'daily') return true;
+    if (delivery === 'sunday') {
+      // Deliver all week's picks on Sunday
+      if (todayName !== 'sunday') return { shouldRun: false, targetDays: [] };
+      return { shouldRun: true, targetDays: availableDays.length > 0 ? availableDays : ['monday', 'wednesday', 'friday'] };
+    }
 
-    const dow = new Date().getUTCDay(); // 0=Sun
-    if (freq === '2x_week') return dow === 1 || dow === 4; // Mon or Thu
-    if (freq === 'weekly') return dow === 1;               // Mon only
+    if (delivery === 'smart') {
+      const targetDays: string[] = [];
+      // Weekday: deliver day-of if today is a selected weekday
+      if (WEEKDAYS.includes(todayName) && (availableDays.length === 0 || availableDays.includes(todayName))) {
+        targetDays.push(todayName);
+      }
+      // Wednesday: also queue upcoming weekend days that user selected
+      if (todayName === 'wednesday') {
+        targetDays.push(...WEEKEND.filter(d => availableDays.includes(d)));
+      }
+      return { shouldRun: targetDays.length > 0, targetDays };
+    }
 
-    return false;
+    return { shouldRun: false, targetDays: [] };
   }
 }
 

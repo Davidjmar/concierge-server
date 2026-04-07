@@ -84,11 +84,10 @@ router.post('/onboarding/preferences', requireAuth, async (req: Request, res: Re
 
 router.post('/onboarding/schedule', requireAuth, async (req: Request, res: Response) => {
   try {
-    const { frequency, days, max_proposals } = req.body;
+    const { days, delivery_timing } = req.body;
     await req.user!.update({
-      recommendation_frequency: frequency,
       recommendation_days: days,
-      max_proposals_per_run: max_proposals ?? 3,
+      delivery_timing: delivery_timing ?? 'day_of',
       onboarding_complete: true,
     });
     res.json({ ok: true });
@@ -109,10 +108,8 @@ router.get('/settings', requireAuth, (req: Request, res: Response) => {
     work_location: u.work_location,
     preferences: u.preferences,
     schedule: {
-      frequency: u.recommendation_frequency,
       days: u.recommendation_days,
-      time: u.recommendation_time,
-      max_proposals: u.max_proposals_per_run,
+      delivery_timing: u.delivery_timing ?? 'day_of',
     },
   });
 });
