@@ -113,10 +113,16 @@ class RecommendationEngine {
   }
 
   private async userAlreadyRanToday(userId: number): Promise<boolean> {
-    const startOfUtcDay = new Date();
-    startOfUtcDay.setUTCHours(0, 0, 0, 0);
+    // Use Denver local midnight as the day boundary, not UTC midnight.
+    // UTC midnight = 6pm Denver (MDT) which would reset the guard mid-evening.
+    const startOfDenverDay = new Date();
+    startOfDenverDay.setUTCHours(DENVER_UTC_OFFSET_HOURS, 0, 0, 0); // midnight Denver = 06:00 UTC (MDT)
+    // If we're before Denver midnight (i.e., UTC hour < offset), roll back a day
+    if (new Date().getUTCHours() < DENVER_UTC_OFFSET_HOURS) {
+      startOfDenverDay.setUTCDate(startOfDenverDay.getUTCDate() - 1);
+    }
     const count = await UserEventRecommendation.count({
-      where: { user_id: userId, proposed_at: { [Op.gte]: startOfUtcDay } },
+      where: { user_id: userId, proposed_at: { [Op.gte]: startOfDenverDay } },
     });
     return count > 0;
   }
@@ -165,8 +171,25 @@ class RecommendationEngine {
     const proposalsThisRun = Math.min(remainingThisWeek, 1);
     const proposals: { event: Event; score: number }[] = [];
 
+    // Find calendar days that already have a pending kno proposal — don't double-book a day
+    const pendingProposals = await UserEventRecommendation.findAll({
+      where: { user_id: user.id, user_response: 'pending' },
+      include: [{ model: Event, attributes: ['datetime'] }],
+    });
+    const daysAlreadyBooked = new Set<string>(
+      pendingProposals
+        .map(p => (p as any).Event?.datetime?.start)
+        .filter(Boolean)
+        .map((start: string | Date) => new Date(start).toISOString().slice(0, 10))
+    );
+
     for (const window of openWindows) {
       if (proposals.length >= proposalsThisRun) break;
+      const windowDay = window.start.toISOString().slice(0, 10);
+      if (daysAlreadyBooked.has(windowDay)) {
+        console.log(`User ${user.id}: ${windowDay} already has a pending proposal — skipping window`);
+        continue;
+      }
       const candidates = await this.getCandidatesForWindow(user, window, proposals.map(p => p.event.id));
       proposals.push(...candidates.slice(0, proposalsThisRun - proposals.length));
     }
@@ -193,6 +216,17 @@ class RecommendationEngine {
         user_response: 'pending',
         proposal_score: score,
       });
+
+      // Track times_proposed in venue_history
+      const venueName: string | null = (event as any).venue_name ?? null;
+      if (venueName) {
+        const matrix = (user.interest_matrix as InterestMatrix) ?? defaultMatrix();
+        const history = matrix.venue_history ?? {};
+        const entry = history[venueName] ?? { times_proposed: 0, times_kept: 0 };
+        history[venueName] = { ...entry, times_proposed: entry.times_proposed + 1 };
+        await user.update({ interest_matrix: { ...matrix, venue_history: history } });
+      }
+
       console.log(`User ${user.id}: proposed "${event.title}" (score ${score.toFixed(2)}, gcal: ${gcalId})`);
     }
   }
@@ -236,12 +270,23 @@ class RecommendationEngine {
         user_id: user.id,
         proposed_at: { [Op.gte]: sixtyDaysAgo },
       },
-      attributes: ['event_id'],
+      attributes: ['event_id', 'proposed_at'],
+      include: [{ model: Event, attributes: ['venue_name'] }],
     });
     const excludedIds = [
       ...recentlyProposed.map(r => r.event_id),
       ...alreadyProposedIds,
     ];
+
+    // Build venue → most recent proposal date map for freshness decay
+    const venueLastProposed = new Map<string, Date>();
+    for (const rec of recentlyProposed) {
+      const venueName = (rec as any).Event?.venue_name;
+      if (!venueName || !rec.proposed_at) continue;
+      const existing = venueLastProposed.get(venueName);
+      const proposedAt = new Date(rec.proposed_at);
+      if (!existing || proposedAt > existing) venueLastProposed.set(venueName, proposedAt);
+    }
 
     // Step 4: Category match
     const preferredTypes = prefs.event_types ?? [];
@@ -388,6 +433,29 @@ class RecommendationEngine {
 
       // Boost: walkable (within 1 mile)
       if (distanceMiles <= 1) score += 0.2;
+
+      // Boost/decay: venue history — reward proven venues, penalize repeatedly-ignored ones
+      const venueName: string | null = (event as any).venue_name ?? null;
+      if (venueName && matrix.venue_history) {
+        const history = matrix.venue_history[venueName];
+        if (history) {
+          if (history.times_kept > 0) score += 0.3;
+          if (history.times_proposed >= 3 && history.times_kept === 0) score -= 0.2;
+        }
+      }
+
+      // Boost: manually curated events (Google Sheets) are hand-picked — trust them
+      if ((event as any).source === 'google_sheets') score += 0.25;
+
+      // Decay: venue freshness — don't keep proposing the same venue repeatedly
+      if (venueName) {
+        const lastProposed = venueLastProposed.get(venueName);
+        if (lastProposed) {
+          const daysSince = (Date.now() - lastProposed.getTime()) / (1000 * 60 * 60 * 24);
+          if (daysSince < 7) score -= 0.5;
+          else if (daysSince < 21) score -= 0.3;
+        }
+      }
 
       // Decay: alcohol-centric events score lower Mon–Wed
       // Still eligible, just deprioritised vs. non-bar alternatives
@@ -610,7 +678,12 @@ class RecommendationEngine {
 
         // Update interest matrix
         if (event?.tags) {
-          await this.updateInterestMatrix(user, event.tags as string[], status);
+          await this.updateInterestMatrix(
+            user,
+            event.tags as string[],
+            status,
+            (event as any).venue_name ?? null
+          );
         }
 
         console.log(`[FeedbackLoop] User ${user.id}: "${event?.title}" → ${status}`);
@@ -623,14 +696,23 @@ class RecommendationEngine {
   private async updateInterestMatrix(
     user: User,
     tags: string[],
-    response: 'kept' | 'deleted'
+    response: 'kept' | 'deleted',
+    venueName?: string | null
   ): Promise<void> {
     const matrix = (user.interest_matrix as InterestMatrix) ?? defaultMatrix();
     const delta = response === 'kept' ? 0.2 : -0.1;
-    const updated = applyTagWeightUpdates(matrix, tags, delta);
+    let updated = applyTagWeightUpdates(matrix, tags, delta);
 
-    // Also update venue_history for 'kept' events
-    // (venue_name lives on the event — handled via tags for simplicity)
+    // Update venue_history
+    if (venueName) {
+      const history = updated.venue_history ?? {};
+      const entry = history[venueName] ?? { times_proposed: 0, times_kept: 0 };
+      history[venueName] = {
+        times_proposed: entry.times_proposed,
+        times_kept: response === 'kept' ? entry.times_kept + 1 : entry.times_kept,
+      };
+      updated = { ...updated, venue_history: history };
+    }
 
     await user.update({ interest_matrix: updated });
   }

@@ -15,6 +15,7 @@ import initDatabase from './config/init.js';
 import sequelize from './config/database.js';
 import Event from './models/event.js';
 import { DENVER } from './config/cities.js';
+import tagEnrichmentService from './services/tagEnrichmentService.js';
 
 dotenv.config();
 
@@ -194,6 +195,13 @@ app.post('/api/debug/scrape-botanic-gardens', requireDebugSecret, async (_req, r
   } catch (err) { console.error('[Debug] Botanic Gardens error:', err); }
 });
 
+app.post('/api/debug/enrich-tags', requireDebugSecret, async (_req, res) => {
+  res.json({ ok: true, message: 'Tag enrichment started — check server logs' });
+  try {
+    await tagEnrichmentService.enrichSparseEvents();
+  } catch (err) { console.error('[Debug] Tag enrichment error:', err); }
+});
+
 app.post('/api/debug/scrape-all', requireDebugSecret, async (_req, res) => {
   // Respond immediately so the HTTP connection doesn't time out
   res.json({ ok: true, message: 'Scrape started — check server logs for progress' });
@@ -284,6 +292,16 @@ cron.schedule('0 */6 * * *', async () => {
   }
 });
 
+// ── Tag enrichment — Sunday 4 AM UTC (batch-enrich events with sparse tags) ───
+cron.schedule('0 4 * * 0', async () => {
+  console.log('[Cron] Tag enrichment batch starting…');
+  try {
+    await tagEnrichmentService.enrichSparseEvents();
+  } catch (err) {
+    console.error('[Cron] Tag enrichment error:', err);
+  }
+});
+
 // ── Recommendation tick — every hour ─────────────────────────────────────────
 cron.schedule('0 * * * *', async () => {
   console.log('[Cron] Recommendation tick…');
@@ -308,6 +326,7 @@ function delay(ms: number) {
 /** Upsert partial Event objects (from GoldenBuzz / Google Sheets scrapers) */
 async function upsertEvents(events: Partial<Event>[], label: string) {
   let saved = 0, updated = 0, errors = 0;
+  const newRecords: Event[] = [];
 
   for (const event of events) {
     if (!event.title) { errors++; continue; }
@@ -325,6 +344,7 @@ async function upsertEvents(events: Partial<Event>[], label: string) {
 
       if (created) {
         saved++;
+        newRecords.push(record);
       } else {
         await record.update({ ...event, last_checked: new Date() });
         updated++;
@@ -336,11 +356,13 @@ async function upsertEvents(events: Partial<Event>[], label: string) {
   }
 
   console.log(`[${label}] New: ${saved}, Updated: ${updated}, Errors: ${errors}`);
+  await enrichNewEvents(newRecords, label);
 }
 
 /** Upsert RawEvent objects (from Eventbrite / Yelp / Westword scrapers) */
 async function upsertRawEvents(events: any[], label: string) {
   let saved = 0, updated = 0, errors = 0;
+  const newRecords: Event[] = [];
 
   for (const ev of events) {
     if (!ev.title || !ev.sourceUrl) { errors++; continue; }
@@ -372,6 +394,7 @@ async function upsertRawEvents(events: any[], label: string) {
 
       if (created) {
         saved++;
+        newRecords.push(record);
       } else {
         await record.update({
           title: ev.title,
@@ -393,6 +416,29 @@ async function upsertRawEvents(events: any[], label: string) {
   }
 
   console.log(`[${label}] New: ${saved}, Updated: ${updated}, Errors: ${errors}`);
+  await enrichNewEvents(newRecords, label);
+}
+
+/** Enrich tags on newly-created events using Claude Haiku. Fire-and-forget friendly. */
+async function enrichNewEvents(records: Event[], label: string) {
+  if (!process.env.ANTHROPIC_API_KEY || records.length === 0) return;
+  console.log(`[${label}] Enriching tags for ${records.length} new event(s)…`);
+  for (const record of records) {
+    try {
+      const mergedTags = await tagEnrichmentService.enrichEventTags({
+        title: record.title,
+        description: record.description ?? undefined,
+        venue_name: (record as any).venue_name ?? undefined,
+        tags: (record.tags as string[]) ?? [],
+      });
+      if (mergedTags.length > ((record.tags as string[]) ?? []).length) {
+        await record.update({ tags: mergedTags });
+      }
+      await new Promise(r => setTimeout(r, 500)); // ~2 req/s
+    } catch (err) {
+      console.error(`[${label}] Tag enrichment failed for "${record.title}":`, err);
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
