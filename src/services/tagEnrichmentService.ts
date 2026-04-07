@@ -110,48 +110,52 @@ class TagEnrichmentService {
   /**
    * Batch-enriches all active events that have fewer than 2 tags.
    * Safe to run on a schedule — won't re-process already-enriched events.
-   * Returns counts: { enriched, skipped, errors }
    */
   async enrichSparseEvents(): Promise<{ enriched: number; skipped: number; errors: number }> {
+    const all = await Event.findAll({ where: { is_active: true }, limit: 500 });
+    const sparse = all.filter(e => ((e.tags as string[]) ?? []).length < 2);
+    return this._enrichBatch(sparse, 'sparse');
+  }
+
+  /**
+   * Re-reviews ALL active events and merges in any improved tags from the LLM.
+   * Updates an event only if the merged result differs from current tags.
+   * Safe to run manually — existing good tags are preserved, never removed.
+   */
+  async enrichAllEvents(): Promise<{ enriched: number; skipped: number; errors: number }> {
+    const all = await Event.findAll({ where: { is_active: true } });
+    console.log(`[TagEnrichment] Reviewing all ${all.length} active events…`);
+    return this._enrichBatch(all, 'full');
+  }
+
+  private async _enrichBatch(
+    events: Event[],
+    label: string
+  ): Promise<{ enriched: number; skipped: number; errors: number }> {
     if (!process.env.ANTHROPIC_API_KEY) {
       console.log('[TagEnrichment] Skipped — ANTHROPIC_API_KEY not set');
       return { enriched: 0, skipped: 0, errors: 0 };
     }
 
-    // Find active events with 0 or 1 tags
-    const sparse = await Event.findAll({
-      where: {
-        is_active: true,
-        [Op.or]: [
-          { tags: null },
-          { tags: [] },
-          // Sequelize JSON array length check — filter in JS for portability
-        ],
-      },
-      limit: 200, // process at most 200 per run to control cost
-    });
-
-    // Also pick up events with exactly 1 tag (likely just source-assigned)
-    const toEnrich = sparse.filter(e => {
-      const t = (e.tags as string[]) ?? [];
-      return t.length < 2;
-    });
-
-    console.log(`[TagEnrichment] Enriching ${toEnrich.length} sparse events`);
-
+    console.log(`[TagEnrichment:${label}] Processing ${events.length} events…`);
     let enriched = 0, skipped = 0, errors = 0;
 
-    for (const event of toEnrich) {
+    for (const event of events) {
       try {
+        const existing = (event.tags as string[]) ?? [];
         const mergedTags = await this.enrichEventTags({
           title: event.title,
           description: event.description ?? undefined,
           venue_name: (event as any).venue_name ?? undefined,
-          tags: (event.tags as string[]) ?? [],
+          tags: existing,
         });
 
-        if (mergedTags.length > ((event.tags as string[]) ?? []).length) {
+        const changed = mergedTags.length !== existing.length ||
+          mergedTags.some(t => !existing.includes(t));
+
+        if (changed) {
           await event.update({ tags: mergedTags });
+          console.log(`[TagEnrichment:${label}] "${event.title}": [${existing.join(', ')}] → [${mergedTags.join(', ')}]`);
           enriched++;
         } else {
           skipped++;
@@ -160,12 +164,12 @@ class TagEnrichmentService {
         // ~2 req/s to stay within Haiku's rate limits
         await new Promise(r => setTimeout(r, 500));
       } catch (err) {
-        console.error(`[TagEnrichment] Error on event ${event.id} "${event.title}":`, err);
+        console.error(`[TagEnrichment:${label}] Error on event ${event.id} "${event.title}":`, err);
         errors++;
       }
     }
 
-    console.log(`[TagEnrichment] Done — enriched: ${enriched}, skipped: ${skipped}, errors: ${errors}`);
+    console.log(`[TagEnrichment:${label}] Done — enriched: ${enriched}, skipped: ${skipped}, errors: ${errors}`);
     return { enriched, skipped, errors };
   }
 }

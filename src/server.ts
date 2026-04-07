@@ -202,6 +202,13 @@ app.post('/api/debug/enrich-tags', requireDebugSecret, async (_req, res) => {
   } catch (err) { console.error('[Debug] Tag enrichment error:', err); }
 });
 
+app.post('/api/debug/enrich-tags-all', requireDebugSecret, async (_req, res) => {
+  res.json({ ok: true, message: 'Full tag re-review started — check server logs' });
+  try {
+    await tagEnrichmentService.enrichAllEvents();
+  } catch (err) { console.error('[Debug] Full tag enrichment error:', err); }
+});
+
 app.post('/api/debug/scrape-all', requireDebugSecret, async (_req, res) => {
   // Respond immediately so the HTTP connection doesn't time out
   res.json({ ok: true, message: 'Scrape started — check server logs for progress' });
