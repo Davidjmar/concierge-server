@@ -81,9 +81,9 @@ const state = {
           window.location.href = '/proposals';
           return;
         }
-        // Logged in on landing — show nav buttons instead of sign-in CTA
+        // Logged in on landing — show nav bar, hide sign-in CTA
         document.getElementById('guest-cta').style.display = 'none';
-        document.getElementById('user-nav').style.display = '';
+        document.getElementById('main-nav').style.display = '';
         wireInteractions();
         goTo(1);
         return;
