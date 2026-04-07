@@ -71,24 +71,30 @@ const state = {
   const params = new URLSearchParams(window.location.search);
   const step = parseInt(params.get('step') ?? '1', 10);
 
-  // If OAuth redirected back with step=2+, check auth and route accordingly
-  if (step > 1) {
-    try {
-      const res = await fetch('/api/me');
-      if (res.ok) {
-        const me = await res.json();
-        if (me.onboarding_complete) {
+  try {
+    const res = await fetch('/api/me');
+    if (res.ok) {
+      const me = await res.json();
+      if (me.onboarding_complete) {
+        if (step > 1) {
+          // OAuth redirect back with step param — go straight to proposals
           window.location.href = '/proposals';
           return;
         }
-        // Logged in but onboarding incomplete — continue from the given step
+        // Logged in on landing — show nav buttons instead of sign-in CTA
+        document.getElementById('guest-cta').style.display = 'none';
+        document.getElementById('user-nav').style.display = '';
         wireInteractions();
-        goTo(step);
+        goTo(1);
         return;
       }
-    } catch {
-      // Not logged in — fall through to landing
+      // Logged in but onboarding incomplete — continue from the given step
+      wireInteractions();
+      goTo(step > 1 ? step : 2);
+      return;
     }
+  } catch {
+    // Not logged in — fall through to landing
   }
 
   wireInteractions();
