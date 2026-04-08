@@ -3,6 +3,7 @@ import Event from '../models/event.js';
 import UserEventRecommendation from '../models/userEventRecommendation.js';
 import calendarService from './calendarService.js';
 import emailService from './emailService.js';
+import { getCityUTCOffset, toCityLocalDate } from '../utils/timezone.js';
 import { InterestMatrix, TagWeights, UserPreferencesV2, UserResponse } from '../types/index.js';
 import { Op } from 'sequelize';
 
@@ -50,24 +51,6 @@ function applyTagWeightUpdates(
   return { ...matrix, tag_weights: weights, last_updated: new Date().toISOString() };
 }
 
-// Denver is UTC-6 (MDT, Mar–Nov) / UTC-7 (MST, Nov–Mar).
-// We use a fixed offset for converting local Denver times to UTC.
-const DENVER_UTC_OFFSET_HOURS = (() => {
-  // Determine MST vs MDT based on current date
-  const now = new Date();
-  const jan = new Date(now.getFullYear(), 0, 1);
-  const jul = new Date(now.getFullYear(), 6, 1);
-  const stdOffset = Math.max(jan.getTimezoneOffset(), jul.getTimezoneOffset());
-  const isDST = now.getTimezoneOffset() < stdOffset;
-  // Server is UTC so we manually track Denver offset
-  // MDT = UTC-6 (offset to add to local time to get UTC)
-  // MST = UTC-7
-  const month = now.getMonth() + 1; // 1-12
-  // DST: second Sunday in March through first Sunday in November
-  const inDST = month > 3 || (month === 3 && now.getDate() >= 8) || month < 11;
-  return inDST ? 6 : 7;
-})();
-
 // Denver city center fallback coordinates
 const DENVER_CENTER_COORDS: [number, number] = [-104.9847, 39.7392];
 
@@ -85,24 +68,24 @@ class RecommendationEngine {
   async runForEligibleUsers(): Promise<void> {
     const now = new Date();
     const DAY_NAMES = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-    const todayName = DAY_NAMES[now.getUTCDay()];
-    const denverHour = (now.getUTCHours() - DENVER_UTC_OFFSET_HOURS + 24) % 24;
-
-    console.log(`[RecommendationEngine] Tick — Denver ${denverHour}:00, day=${todayName}`);
-
-    // Only deliver at/after noon Denver time
-    if (denverHour < 12) {
-      console.log('[RecommendationEngine] Before noon Denver — skipping');
-      return;
-    }
 
     const users = await User.findAll({ where: { onboarding_complete: true } });
 
     for (const user of users) {
       try {
+        const city = user.city ?? 'denver';
+        const cityOffset = getCityUTCOffset(city, now);
+        const cityLocalNow = toCityLocalDate(city, now);
+        const cityHour = cityLocalNow.getUTCHours();
+        const todayName = DAY_NAMES[cityLocalNow.getUTCDay()];
+
+        // Only deliver at/after noon city time
+        if (cityHour < 12) continue;
+
         const { shouldRun, targetDays } = this.getDeliveryInfo(user, todayName);
         if (!shouldRun) continue;
-        console.log(`[RecommendationEngine] Running for user ${user.id} — targeting days: ${targetDays.join(', ')}`);
+
+        console.log(`[RecommendationEngine] Running for user ${user.id} (${city}, ${todayName} ${cityHour}:00) — targeting days: ${targetDays.join(', ')}`);
         await this.runForUser(user, targetDays);
       } catch (err) {
         console.error(`[RecommendationEngine] Error for user ${user.id}:`, err);
@@ -110,27 +93,21 @@ class RecommendationEngine {
     }
   }
 
-  private async userAlreadyRanToday(userId: number): Promise<boolean> {
-    // Use Denver local midnight as the day boundary, not UTC midnight.
-    // UTC midnight = 6pm Denver (MDT) which would reset the guard mid-evening.
-    const startOfDenverDay = new Date();
-    startOfDenverDay.setUTCHours(DENVER_UTC_OFFSET_HOURS, 0, 0, 0); // midnight Denver = 06:00 UTC (MDT)
-    // If we're before Denver midnight (i.e., UTC hour < offset), roll back a day
-    if (new Date().getUTCHours() < DENVER_UTC_OFFSET_HOURS) {
-      startOfDenverDay.setUTCDate(startOfDenverDay.getUTCDate() - 1);
+  private async userAlreadyRanToday(userId: number, cityOffset: number): Promise<boolean> {
+    // Use city local midnight as the day boundary (not UTC midnight).
+    // e.g. for Denver MDT: city midnight = 06:00 UTC.
+    const now = new Date();
+    const startOfCityDay = new Date();
+    startOfCityDay.setUTCHours(cityOffset, 0, 0, 0);
+    // If the current UTC hour is before the offset, we're still in the
+    // previous UTC day but it's already "today" in city time — roll back.
+    if (now.getUTCHours() < cityOffset) {
+      startOfCityDay.setUTCDate(startOfCityDay.getUTCDate() - 1);
     }
     const count = await UserEventRecommendation.count({
-      where: { user_id: userId, proposed_at: { [Op.gte]: startOfDenverDay } },
+      where: { user_id: userId, proposed_at: { [Op.gte]: startOfCityDay } },
     });
     return count > 0;
-  }
-
-  /** Returns how many proposals have been created for a user in the last 7 days. */
-  private async proposalsThisWeek(userId: number): Promise<number> {
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    return UserEventRecommendation.count({
-      where: { user_id: userId, proposed_at: { [Op.gte]: sevenDaysAgo } },
-    });
   }
 
   /**
@@ -175,7 +152,8 @@ class RecommendationEngine {
     });
 
     // Guard: already ran today (bypass for replacement runs)
-    const alreadyRanToday = await this.userAlreadyRanToday(user.id);
+    const cityOffset = getCityUTCOffset(user.city ?? 'denver', new Date());
+    const alreadyRanToday = await this.userAlreadyRanToday(user.id, cityOffset);
     if (alreadyRanToday && !replacementNeeded) {
       console.log(`User ${user.id}: already ran today and no replacement needed — skipping`);
       return;
@@ -198,16 +176,21 @@ class RecommendationEngine {
       where: { user_id: user.id, user_response: 'pending' },
       include: [{ model: Event, attributes: ['datetime'] }],
     });
+    // Use city-local dates for day keys so evening events (8pm–midnight Denver)
+    // aren't misclassified as the next UTC day.
+    const toLocalDateKey = (t: Date) =>
+      toCityLocalDate(user.city ?? 'denver', t).toISOString().slice(0, 10);
+
     const daysAlreadyBooked = new Set<string>(
       pendingProposals
         .map(p => (p as any).Event?.datetime?.start)
         .filter(Boolean)
-        .map((start: string | Date) => new Date(start).toISOString().slice(0, 10))
+        .map((start: string | Date) => toLocalDateKey(new Date(start)))
     );
 
     for (const window of openWindows) {
       if (proposals.length >= proposalsThisRun) break;
-      const windowDay = window.start.toISOString().slice(0, 10);
+      const windowDay = toLocalDateKey(window.start);
       if (daysAlreadyBooked.has(windowDay)) {
         console.log(`User ${user.id}: ${windowDay} already has a pending proposal — skipping window`);
         continue;
@@ -542,10 +525,13 @@ class RecommendationEngine {
   async explainForUser(user: User): Promise<Record<string, any>> {
     const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
     const now = new Date();
-    const todayName = dayNames[now.getUTCDay()];
+    const city = user.city ?? 'denver';
+    const cityOffset = getCityUTCOffset(city, now);
+    const cityLocalNow = toCityLocalDate(city, now);
+    const todayName = dayNames[cityLocalNow.getUTCDay()];
 
     const { shouldRun: scheduleMatch, targetDays } = this.getDeliveryInfo(user, todayName);
-    const alreadyRan = await this.userAlreadyRanToday(user.id);
+    const alreadyRan = await this.userAlreadyRanToday(user.id, cityOffset);
 
     if (!user.google_access_token) {
       return { blocked: 'no_google_token', user_id: user.id };

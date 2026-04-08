@@ -8,6 +8,7 @@ import geocodingService from '../services/geocodingService.js';
 import recommendationEngine from '../services/recommendationEngine.js';
 import { requireAuth, requireDebugSecret } from '../middleware/auth.js';
 import { UserPreferencesV2, GeoPoint } from '../types/index.js';
+import { getCityUTCOffset, toCityLocalDate } from '../utils/timezone.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -152,6 +153,53 @@ router.post('/proposals/:id/pass', requireAuth, async (req: Request, res: Respon
       re_search_hint: hasHint ? re_search_hint.trim() : null,
       needs_replacement: hasHint,
     });
+    res.json({ ok: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message ?? 'Unknown error' });
+  }
+});
+
+// ─── Find me something else ───────────────────────────────────────────────────
+
+router.post('/proposals/:id/find-something-else', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid id' });
+
+    const rec = await UserEventRecommendation.findOne({
+      where: { id, user_id: req.user!.id },
+      include: [{ model: Event, attributes: ['datetime'] }],
+    });
+    if (!rec) return res.status(404).json({ error: 'Proposal not found' });
+
+    const { re_search_hint } = req.body ?? {};
+    const hint = typeof re_search_hint === 'string' && re_search_hint.trim() ? re_search_hint.trim() : null;
+
+    await rec.update({
+      user_response: 'deleted',
+      response_detected_at: new Date(),
+      pass_reason: 'find_something_else',
+      re_search_hint: hint,
+      needs_replacement: true,
+    });
+
+    // Derive the target day from the original event's city-local date
+    const user = req.user!;
+    const DAY_NAMES = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+    const eventStart = (rec as any).Event?.datetime?.start;
+    let targetDays: string[] = [];
+    if (eventStart) {
+      const localDate = toCityLocalDate(user.city ?? 'denver', new Date(eventStart));
+      targetDays = [DAY_NAMES[localDate.getUTCDay()]];
+    }
+
+    // Fire re-run immediately in the background — don't make the client wait
+    setImmediate(() => {
+      recommendationEngine.runForUser(user, targetDays).catch(err =>
+        console.error(`[find-something-else] Error for user ${user.id}:`, err)
+      );
+    });
+
     res.json({ ok: true });
   } catch (error: any) {
     res.status(500).json({ error: error?.message ?? 'Unknown error' });

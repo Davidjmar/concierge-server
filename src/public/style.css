@@ -354,6 +354,30 @@ input::placeholder { color: var(--muted); }
 
 .pass-btn:hover { border-color: var(--error); color: var(--error); }
 
+.proposal-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.75rem; }
+
+.find-btn {
+  align-self: flex-start;
+  padding: 0.3rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--accent);
+  font-family: var(--font);
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.find-btn:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+
+.find-panel {
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
 /* ─── Nav ───────────────────────────────────────────────────────────────────── */
 .nav {
   display: flex;

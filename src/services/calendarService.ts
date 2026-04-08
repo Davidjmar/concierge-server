@@ -3,6 +3,7 @@ import { OAuth2Client } from 'google-auth-library';
 import crypto from 'crypto';
 import User from '../models/user.js';
 import Event from '../models/event.js';
+import { getCityUTCOffset } from '../utils/timezone.js';
 
 const SCOPES = [
   'https://www.googleapis.com/auth/calendar.events',
@@ -194,16 +195,15 @@ export class CalendarService {
     const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
     const openWindows: { start: Date; end: Date; isWeekend: boolean }[] = [];
 
-    // Denver UTC offset: MDT = UTC-6 (Mar–Nov), MST = UTC-7 (Nov–Mar)
-    // Offset in hours to add to Denver local time to get UTC
     const now = new Date();
-    const month = now.getUTCMonth() + 1; // 1-12
-    const inDST = month >= 3 && month <= 11;
-    const utcOffset = inDST ? 6 : 7;
+    const utcOffset = getCityUTCOffset(user.city ?? 'denver', now);
 
+    // Base the loop off the city-local date so evening runs (after 6pm Denver
+    // = after midnight UTC) still compute the correct local day names.
+    const cityLocalNow = new Date(now.getTime() - utcOffset * 3_600_000);
     for (let i = 0; i < daysAhead; i++) {
-      const day = new Date(now);
-      day.setUTCDate(now.getUTCDate() + i);
+      const day = new Date(cityLocalNow);
+      day.setUTCDate(cityLocalNow.getUTCDate() + i);
       const dayName = dayNames[day.getUTCDay()];
 
       if (!preferredDaySet.has(dayName)) continue;
