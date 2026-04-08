@@ -373,7 +373,8 @@ class RecommendationEngine {
           ? new Date((event.datetime as any).start).getUTCHours()
           : 17; // default 5pm local
 
-        const startHourUtc = (localStartHour + DENVER_UTC_OFFSET_HOURS) % 24;
+        const cityOffset = getCityUTCOffset(user.city ?? 'denver', new Date());
+        const startHourUtc = (localStartHour + cityOffset) % 24;
 
         const eventStartTime = new Date(window.start);
         eventStartTime.setUTCHours(startHourUtc, 0, 0, 0);
