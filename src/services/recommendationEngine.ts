@@ -174,17 +174,6 @@ class RecommendationEngine {
       order: [['response_detected_at', 'DESC']],
     });
 
-    // Weekly budget = number of selected days, capped at 5
-    const availableDays = user.recommendation_days ?? [];
-    const weeklyLimit = availableDays.length || 1;
-    const alreadySentThisWeek = await this.proposalsThisWeek(user.id);
-    const remainingThisWeek = weeklyLimit - alreadySentThisWeek;
-
-    if (remainingThisWeek <= 0 && !replacementNeeded) {
-      console.log(`User ${user.id}: weekly proposal limit (${weeklyLimit}) reached — skipping`);
-      return;
-    }
-
     // Guard: already ran today (bypass for replacement runs)
     const alreadyRanToday = await this.userAlreadyRanToday(user.id);
     if (alreadyRanToday && !replacementNeeded) {
@@ -192,8 +181,8 @@ class RecommendationEngine {
       return;
     }
 
-    // One proposal per target day, capped at remaining weekly budget
-    const proposalsThisRun = replacementNeeded ? 1 : Math.min(targetDays.length || 1, remainingThisWeek);
+    // One proposal per target day — daysAlreadyBooked (below) prevents double-booking
+    const proposalsThisRun = replacementNeeded ? 1 : (targetDays.length || 1);
 
     // Pass the re_search_hint (if any) to the scoring pipeline
     const reSearchHint = replacementNeeded?.re_search_hint ?? null;
@@ -557,9 +546,6 @@ class RecommendationEngine {
 
     const { shouldRun: scheduleMatch, targetDays } = this.getDeliveryInfo(user, todayName);
     const alreadyRan = await this.userAlreadyRanToday(user.id);
-    const alreadySentThisWeek = await this.proposalsThisWeek(user.id);
-    const availableDays = user.recommendation_days ?? [];
-    const weeklyLimit = availableDays.length || 1;
 
     if (!user.google_access_token) {
       return { blocked: 'no_google_token', user_id: user.id };
@@ -595,9 +581,6 @@ class RecommendationEngine {
       target_days: targetDays,
       delivery_timing: user.delivery_timing ?? 'day_of',
       already_ran_today: alreadyRan,
-      proposals_this_week: alreadySentThisWeek,
-      weekly_limit: weeklyLimit,
-      remaining_this_week: weeklyLimit - alreadySentThisWeek,
       busy_windows_count: busyWindows.length,
       open_windows_count: openWindows.length,
       recommendation_days: user.recommendation_days,
