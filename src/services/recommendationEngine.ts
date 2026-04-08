@@ -176,7 +176,7 @@ class RecommendationEngine {
 
     // Weekly budget = number of selected days, capped at 5
     const availableDays = user.recommendation_days ?? [];
-    const weeklyLimit = Math.min(availableDays.length || 1, 5);
+    const weeklyLimit = availableDays.length || 1;
     const alreadySentThisWeek = await this.proposalsThisWeek(user.id);
     const remainingThisWeek = weeklyLimit - alreadySentThisWeek;
 
@@ -559,7 +559,7 @@ class RecommendationEngine {
     const alreadyRan = await this.userAlreadyRanToday(user.id);
     const alreadySentThisWeek = await this.proposalsThisWeek(user.id);
     const availableDays = user.recommendation_days ?? [];
-    const weeklyLimit = Math.min(availableDays.length || 1, 5);
+    const weeklyLimit = availableDays.length || 1;
 
     if (!user.google_access_token) {
       return { blocked: 'no_google_token', user_id: user.id };
